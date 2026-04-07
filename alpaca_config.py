@@ -72,6 +72,7 @@ class AlpacaConfig:
     dashboard_jsonl: str = "logs/live_dashboard.jsonl"
     dashboard_snapshot_json: str = "logs/live_dashboard_snapshot.json"
     dashboard_csv: str = "logs/live_dashboard.csv"
+    brain_trace_jsonl: str = "logs/alpaca_brain_trace.jsonl"
 
     @classmethod
     def from_env(cls, symbols: Optional[Sequence[str]] = None) -> "AlpacaConfig":
@@ -82,8 +83,12 @@ class AlpacaConfig:
                 "Set ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY (paper keys) in the environment."
             )
         rest = _env("ALPACA_PAPER_REST_URL", "https://paper-api.alpaca.markets")
-        data_feed = _env("ALPACA_DATA_FEED", "iex")
-        data_ws = _env("ALPACA_DATA_WS_URL", f"wss://stream.data.alpaca.markets/v2/{data_feed}")
+        data_feed_env = os.environ.get("ALPACA_DATA_FEED", "").strip()
+        data_ws_env = os.environ.get("ALPACA_DATA_WS_URL", "").strip()
+        data_feed = data_feed_env or "iex"
+        data_ws = data_ws_env or f"wss://stream.data.alpaca.markets/v2/{data_feed}"
+        if not data_feed_env and "/crypto/" in data_ws:
+            data_feed = "crypto/us"
         trading_ws = _env("ALPACA_TRADING_WS_URL", "wss://paper-api.alpaca.markets/stream")
         sym_raw = _env("ALPACA_SYMBOLS", "SPY")
         sym_list = list(symbols) if symbols else [s.strip().upper() for s in sym_raw.split(",") if s.strip()]
@@ -102,5 +107,6 @@ class AlpacaConfig:
             min_tick_interval_seconds=float(_env("ALPACA_MIN_TICK_INTERVAL", "0.15") or "0.15"),
             status_heartbeat_ticks=int(_env("ALPACA_STATUS_HEARTBEAT_TICKS", "50") or "50"),
             trade_size=float(_env("ALPACA_TRADE_SIZE", "1.0") or "1.0"),
+            brain_trace_jsonl=_env("ALPACA_BRAIN_TRACE_JSONL", "logs/alpaca_brain_trace.jsonl"),
             max_ticks=max_ticks,
         )

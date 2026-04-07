@@ -13,6 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import socket
+import subprocess
+import sys
+import webbrowser
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -33,6 +38,9 @@ from strategies.momentum import generate_signal as momentum_signal
 from strategy_evaluator import evaluate_signals
 
 _log = logging.getLogger(__name__)
+
+DASHBOARD_HOST = "127.0.0.1"
+DASHBOARD_PORT = 8765
 
 DASHBOARD_CSV_FIELDS = [
     "ts",
@@ -87,6 +95,7 @@ def _emit_heartbeat(
     state: Dict[str, float],
     metrics: Dict[str, float],
     detail: str = "",
+    trace: str = "",
 ) -> None:
     if cfg.status_heartbeat_ticks <= 0:
         return
@@ -105,11 +114,66 @@ def _emit_heartbeat(
         float(metrics.get("sharpe_ratio", 0.0)),
         f" detail={detail}" if detail else "",
     )
+    if trace:
+        _log.info("[alpaca_brain] tick=%s %s", tick_counter, trace)
 
 
 def _log_trading_connection_event(logger_obj: QuantLogger, component: str, event: str, detail: str) -> None:
     logger_obj.log_connection_event(component, event, detail)
     _log.info("[%s] %s%s", component, event, f": {detail}" if detail else "")
+
+
+def _write_brain_trace(cfg: AlpacaConfig, row: Dict[str, object]) -> None:
+    append_jsonl(cfg.brain_trace_jsonl, row)
+
+
+def _dashboard_url(host: str = DASHBOARD_HOST, port: int = DASHBOARD_PORT) -> str:
+    return f"http://{host}:{port}"
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.35):
+            return True
+    except OSError:
+        return False
+
+
+def _launch_dashboard(cfg: AlpacaConfig) -> None:
+    auto_launch = os.environ.get("ALPACA_AUTO_DASHBOARD", "1").strip().lower() not in {"0", "false", "no"}
+    if not auto_launch:
+        _log.info("[alpaca_runner] dashboard autostart is disabled; open %s manually", _dashboard_url())
+        return
+
+    if _port_is_open(DASHBOARD_HOST, DASHBOARD_PORT):
+        _log.info("[alpaca_runner] dashboard already running at %s", _dashboard_url())
+    else:
+        dashboard_script = Path(__file__).with_name("alpaca_brain_dashboard.py")
+        if dashboard_script.exists():
+            kwargs: Dict[str, object] = {
+                "cwd": str(dashboard_script.parent),
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "stdin": subprocess.DEVNULL,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            else:
+                kwargs["start_new_session"] = True
+            subprocess.Popen(
+                [sys.executable, str(dashboard_script), "--host", DASHBOARD_HOST, "--port", str(DASHBOARD_PORT)],
+                **kwargs,
+            )
+            _log.info("[alpaca_runner] launched dashboard at %s", _dashboard_url())
+        else:
+            _log.warning("[alpaca_runner] dashboard script not found at %s", dashboard_script)
+
+    auto_open = os.environ.get("ALPACA_AUTO_OPEN_DASHBOARD", "1").strip().lower() not in {"0", "false", "no"}
+    if auto_open:
+        try:
+            webbrowser.open(_dashboard_url())
+        except Exception:
+            pass
 
 
 async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dict[str, float]:
@@ -127,6 +191,19 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
     )
     _log.info(
         "[alpaca_runner] what will be performed: connect the data stream, connect the trade logic loop, warm up features, generate signals, run risk checks, submit paper orders, wait for fills, and log/report state"
+    )
+
+    _write_brain_trace(
+        cfg,
+        {
+            "kind": "startup",
+            "symbols": cfg.symbols,
+            "primary": cfg.symbols[0].upper(),
+            "data_feed": cfg.data_feed,
+            "data_ws_url": cfg.data_ws_url,
+            "trade_size": cfg.trade_size,
+            "status_heartbeat_ticks": cfg.status_heartbeat_ticks,
+        },
     )
 
     client = AlpacaPaperClient(cfg.api_key_id, cfg.api_secret_key, cfg.rest_base_url)
@@ -167,6 +244,14 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
         logger.log_trade_update_event(ev, payload)
         if ev:
             _log.info("[alpaca_trade_update] event=%s", ev)
+            _write_brain_trace(
+                cfg,
+                {
+                    "kind": "trade_update",
+                    "event": ev,
+                    "payload": payload,
+                },
+            )
 
     def on_trading_connection_event(component: str, detail: str) -> None:
         _log_trading_connection_event(logger, "trading_ws", component, detail)
@@ -176,6 +261,15 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
             _log.info("[alpaca_runner] trade update loop connected")
         elif component == "auth_failed":
             _log.info("[alpaca_runner] trade logic authentication failed")
+        _write_brain_trace(
+            cfg,
+            {
+                "kind": "connection",
+                "component": "trading_ws",
+                "event": component,
+                "detail": detail,
+            },
+        )
 
     trading_task = asyncio.create_task(
         run_trading_stream_listener(
@@ -195,6 +289,15 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
             _log.info("[alpaca_runner] data stream connected")
         elif event == "market_data_reconnecting":
             _log.info("[alpaca_runner] data stream reconnecting")
+        _write_brain_trace(
+            cfg,
+            {
+                "kind": "connection",
+                "component": "market_data_ws",
+                "event": event,
+                "detail": detail,
+            },
+        )
 
     try:
         async for tick in stream_alpaca_ticks(cfg, on_connection_event=on_md_event):
@@ -215,8 +318,31 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
 
             metrics = perf.compute_metrics(latest_total_pnl=float(state["total_pnl"]))
 
+            base_trace: Dict[str, object] = {
+                "kind": "decision",
+                "tick": tick_counter,
+                "symbol": tick.symbol,
+                "stage": stage,
+                "timestamp": tick.timestamp.isoformat(),
+                "price": float(tick.price),
+                "position_size": float(state["position_size"]),
+                "equity": float(state["equity"]),
+                "total_pnl": float(state["total_pnl"]),
+                "executed_trades": executed_trades,
+            }
+
             if snap is None:
                 stage = "warmup"
+                _write_brain_trace(
+                    cfg,
+                    {
+                        **base_trace,
+                        "stage": stage,
+                        "detail": "feature_window_not_ready",
+                        "signals": None,
+                        "decision": "warmup",
+                    },
+                )
                 _emit_heartbeat(
                     cfg=cfg,
                     tick_counter=tick_counter,
@@ -226,6 +352,7 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                     state=state,
                     metrics=metrics,
                     detail="feature_window_not_ready",
+                    trace=f"price={tick.price:.4f} feature_engine=warming_up signals=pending",
                 )
                 if tick_counter % 100 == 0:
                     _write_dashboard(cfg, metrics, feedback, primary, executed_trades, "warmup", state)
@@ -251,9 +378,39 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
             logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
             logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
 
+            signal_trace = (
+                f"price={tick.price:.4f} "
+                f"mr={mr.action}:{mr.confidence:.3f}:{mr.reason} "
+                f"mo={mo.action}:{mo.confidence:.3f}:{mo.reason}"
+            )
+            signal_payload = {
+                "mean_reversion": {
+                    "action": mr.action,
+                    "confidence": mr.confidence,
+                    "reason": mr.reason,
+                },
+                "momentum": {
+                    "action": mo.action,
+                    "confidence": mo.confidence,
+                    "reason": mo.reason,
+                },
+            }
+
             chosen = evaluate_signals([mr, mo], confidence_threshold=cfg.confidence_threshold)
             if chosen is None:
                 stage = "no_signal"
+                _write_brain_trace(
+                    cfg,
+                    {
+                        **base_trace,
+                        "stage": stage,
+                        "signals": signal_payload,
+                        "decision": "hold",
+                        "chosen": None,
+                        "risk": None,
+                        "detail": "confidence_below_threshold",
+                    },
+                )
                 _emit_heartbeat(
                     cfg=cfg,
                     tick_counter=tick_counter,
@@ -263,12 +420,14 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                     state=state,
                     metrics=metrics,
                     detail="confidence_below_threshold",
+                    trace=signal_trace + " chosen=none",
                 )
                 if tick_counter % 50 == 0:
                     _write_dashboard(cfg, metrics, feedback, primary, executed_trades, "no_signal", state)
                 continue
 
             stage = "risk_check"
+            signal_trace += f" chosen={chosen.strategy}:{chosen.action}:{chosen.confidence:.3f}:{chosen.reason}"
             trade = {
                 "action": chosen.action,
                 "size": cfg.trade_size,
@@ -289,6 +448,22 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
             allow, risk_reason = check_risk(trade, risk_state)
             if not allow:
                 stage = "risk_blocked"
+                _write_brain_trace(
+                    cfg,
+                    {
+                        **base_trace,
+                        "stage": stage,
+                        "signals": signal_payload,
+                        "chosen": {
+                            "strategy": chosen.strategy,
+                            "action": chosen.action,
+                            "confidence": chosen.confidence,
+                            "reason": chosen.reason,
+                        },
+                        "risk": {"allowed": False, "reason": risk_reason},
+                        "trade": trade,
+                    },
+                )
                 _emit_heartbeat(
                     cfg=cfg,
                     tick_counter=tick_counter,
@@ -298,6 +473,7 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                     state=state,
                     metrics=metrics,
                     detail=risk_reason,
+                    trace=signal_trace + f" risk=blocked:{risk_reason}",
                 )
                 logger.log_risk_block(risk_reason, json.dumps(trade, default=str))
                 continue
@@ -320,6 +496,25 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
             st2 = portfolio.get_portfolio_state()
             metrics = perf.compute_metrics(latest_total_pnl=float(st2["total_pnl"]))
             _write_dashboard(cfg, metrics, feedback, primary, executed_trades, "trade", st2)
+            _write_brain_trace(
+                cfg,
+                {
+                    **base_trace,
+                    "stage": stage,
+                    "signals": signal_payload,
+                    "chosen": {
+                        "strategy": chosen.strategy,
+                        "action": chosen.action,
+                        "confidence": chosen.confidence,
+                        "reason": chosen.reason,
+                    },
+                    "risk": {"allowed": True, "reason": "allowed"},
+                    "executed_trades": executed_trades + 1,
+                    "executed_trades_before": executed_trades,
+                    "trade": result,
+                    "portfolio_after": st2,
+                },
+            )
 
             _emit_heartbeat(
                 cfg=cfg,
@@ -330,6 +525,7 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                 state=st2,
                 metrics=metrics,
                 detail=f"order_id={result.get('alpaca_order_id', '')}",
+                trace=signal_trace + f" trade=executed:{result.get('alpaca_order_id', '')}:{result.get('price', 0.0):.4f}",
             )
 
             if executed_trades % cfg.feedback_trade_interval == 0:
@@ -420,7 +616,9 @@ def _write_dashboard(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
+        _launch_dashboard(AlpacaConfig.from_env())
         asyncio.run(run_alpaca_paper_session())
+        _log.info("[alpaca_runner] metrics and decision trace are available in the dashboard at %s", _dashboard_url())
     except KeyboardInterrupt:
         _log.info("Alpaca paper session stopped by user")
 

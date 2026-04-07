@@ -770,6 +770,20 @@ ALPACA_STATUS_HEARTBEAT_TICKS=50
 python alpaca_paper_runner.py
 ```
 
+1. Open the brain-trace dashboard in a second terminal:
+
+```bash
+python alpaca_brain_dashboard.py
+```
+
+Then open `http://127.0.0.1:8765` in your browser. The dashboard watches `logs/alpaca_brain_trace.jsonl` and shows:
+
+- stream connection status
+- live price intake
+- feature warmup and signal generation
+- confidence filtering and risk blocks
+- executed paper orders and portfolio state
+
 ### Start Paper Run: Monitor JSONL/CSV Dashboards and SQLite
 
 Watch while the session runs:
@@ -777,6 +791,7 @@ Watch while the session runs:
 - JSONL dashboard (append-only): `logs/live_dashboard.jsonl`
 - Latest snapshot (quick view): `logs/live_dashboard_snapshot.json`
 - CSV dashboard (easy charting): `logs/live_dashboard.csv`
+- Brain trace feed used by the browser dashboard: `logs/alpaca_brain_trace.jsonl`
 - Console heartbeat logs every `ALPACA_STATUS_HEARTBEAT_TICKS` primary ticks, showing the current stage, equity, PnL, and trade count.
 - Console output will also show connection status, trade execution, and any risk blocks or reconnect events.
 
