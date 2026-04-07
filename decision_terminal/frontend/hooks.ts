@@ -20,7 +20,7 @@ const fallback: DecisionPayload = {
     controls: {
       trading_enabled: true,
       kill_switch: false,
-      strategies: { mean_reversion: true, momentum: true },
+      strategies: { mean_reversion: true, momentum: true, volatility_breakout: true },
       risk: { confidence_threshold: 0.6, max_position_size: 0.1, max_daily_loss: 500 },
     },
   },

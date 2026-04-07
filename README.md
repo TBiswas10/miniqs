@@ -11,9 +11,10 @@ It is built for iterative strategy development: design, validate, observe, and t
 ## What You Get
 
 - Feature-driven signal pipeline: features -> strategies -> evaluator -> risk -> execution -> portfolio
-- Baseline strategies: mean reversion and momentum
+- Baseline strategies: mean reversion, momentum, and volatility breakout
 - Historical backtesting and conservative parameter optimization
 - Stress testing under volatility, spikes, downtrends, and liquidity shocks
+- DataFeed supports both simulated ticks and live Binance mid-price streaming
 - Live Alpaca paper runner with detailed brain-trace and execution logs
 - Real-time terminal with:
   - decision stream and reasoning

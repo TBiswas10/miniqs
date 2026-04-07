@@ -13,6 +13,7 @@ Alpaca integration (see ``alpaca_data_stream`` and ``alpaca_paper_runner``):
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -77,15 +78,43 @@ class DataFeed:
         Simulated mode:
         - Random walk around the last observed price.
         - Small random volume samples.
+
+        Live mode:
+        - Bridges the async Binance mid-price feed into this sync iterator API.
         """
         if self.mode == "simulated":
             while True:
                 yield self._next_simulated_tick()
         else:
-            # Safety guard: this path should only be reachable when allow_live=True.
-            raise NotImplementedError(
-                "Live data integration is not implemented yet. Use simulated mode."
-            )
+            live_symbol = self.symbol.replace("/", "").replace("-", "").lower()
+            if not live_symbol.endswith("usdt"):
+                live_symbol = f"{live_symbol}usdt"
+
+            loop = asyncio.new_event_loop()
+            stream = self.live_binance_midprice_stream(symbol=live_symbol)
+
+            try:
+                while True:
+                    payload = loop.run_until_complete(anext(stream))
+                    price = float(payload["mid_price"])
+                    tick = Tick(
+                        symbol=self.symbol,
+                        price=price,
+                        timestamp=datetime.now(timezone.utc),
+                        volume=0.0,
+                    )
+                    self._last_price = price
+                    self._latest_tick_payload = {
+                        "timestamp": tick.timestamp.isoformat(),
+                        "mid_price": float(tick.price),
+                    }
+                    yield tick
+            finally:
+                try:
+                    loop.run_until_complete(stream.aclose())
+                except Exception:
+                    pass
+                loop.close()
 
     def _next_simulated_tick(self) -> Tick:
         change_pct = self._rng.uniform(-0.002, 0.002)
@@ -112,13 +141,11 @@ class DataFeed:
         if tick_count < 1:
             raise ValueError("tick_count must be >= 1")
 
-        if self.mode == "live":
-            raise NotImplementedError("Live feed integration is not implemented yet")
-
         self._running = True
         payloads: List[Dict[str, object]] = []
+        stream = self.stream()
         for _ in range(tick_count):
-            tick = self._next_simulated_tick()
+            tick = next(stream)
             payload = {
                 "timestamp": tick.timestamp.isoformat(),
                 "mid_price": float(tick.price),

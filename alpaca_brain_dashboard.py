@@ -639,7 +639,7 @@ HTML = r"""<!doctype html>
             <div class="flow-node" data-stage="signals_generated">
               <div class="flow-index">03</div>
               <div class="flow-label">Signals</div>
-              <div class="flow-desc">mean reversion and momentum</div>
+              <div class="flow-desc">mean reversion, momentum, and volatility breakout</div>
             </div>
             <div class="flow-node" data-stage="risk_check">
               <div class="flow-index">04</div>
@@ -713,6 +713,10 @@ HTML = r"""<!doctype html>
         <div class="signal-row">
           <div class="k">Momentum</div>
           <div class="v" id="mo-signal">--</div>
+        </div>
+        <div class="signal-row">
+          <div class="k">Volatility breakout</div>
+          <div class="v" id="vb-signal">--</div>
         </div>
         <div class="signal-row">
           <div class="k">Chosen action</div>
@@ -886,6 +890,7 @@ HTML = r"""<!doctype html>
 
       document.getElementById('mr-signal').textContent = signalText(summary.mean_reversion);
       document.getElementById('mo-signal').textContent = signalText(summary.momentum);
+      document.getElementById('vb-signal').textContent = signalText(summary.volatility_breakout);
       document.getElementById('chosen-signal').textContent = summary.chosen ? `${summary.chosen.strategy} · ${summary.chosen.action} · ${fmt(summary.chosen.confidence, 3)} · ${summary.chosen.reason || ''}` : '--';
       document.getElementById('risk-reason').textContent = summary.risk ? (summary.risk.allowed ? 'allowed' : `blocked · ${summary.risk.reason || ''}`) : '--';
       document.getElementById('decision-reason').textContent = summary.decision_reason || 'Waiting for live trace.';
@@ -1069,6 +1074,7 @@ class BrainTraceStore:
                 summary["latest_risk"] = "allowed" if latest_decision["risk"].get("allowed") else latest_decision["risk"].get("reason")
             summary["mean_reversion"] = latest_decision.get("signals", {}).get("mean_reversion") if isinstance(latest_decision.get("signals"), dict) else None
             summary["momentum"] = latest_decision.get("signals", {}).get("momentum") if isinstance(latest_decision.get("signals"), dict) else None
+            summary["volatility_breakout"] = latest_decision.get("signals", {}).get("volatility_breakout") if isinstance(latest_decision.get("signals"), dict) else None
             summary["chosen"] = latest_decision.get("chosen")
             summary["risk"] = latest_decision.get("risk")
             summary["trade"] = latest_decision.get("trade")
@@ -1097,6 +1103,7 @@ class BrainTraceStore:
         else:
             summary["mean_reversion"] = None
             summary["momentum"] = None
+          summary["volatility_breakout"] = None
             summary["chosen"] = None
             summary["risk"] = None
             summary["trade"] = None
@@ -1138,9 +1145,11 @@ class BrainTraceStore:
             signals = event.get("signals") if isinstance(event.get("signals"), dict) else {}
             mr = signals.get("mean_reversion") if isinstance(signals.get("mean_reversion"), dict) else {}
             mo = signals.get("momentum") if isinstance(signals.get("momentum"), dict) else {}
+            vb = signals.get("volatility_breakout") if isinstance(signals.get("volatility_breakout"), dict) else {}
             conf_value = max(
               float(mr.get("confidence", 0.0) or 0.0),
               float(mo.get("confidence", 0.0) or 0.0),
+              float(vb.get("confidence", 0.0) or 0.0),
             )
           confidence_points.append({"confidence": conf_value, "tick": event.get("tick")})
         confidence_points = confidence_points[-120:]

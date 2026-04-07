@@ -30,6 +30,7 @@ from portfolio import Portfolio
 from risk_manager import check_risk
 from strategies.mean_reversion import generate_signal as mean_reversion_signal
 from strategies.momentum import generate_signal as momentum_signal
+from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
 from strategy_evaluator import evaluate_signals
 from quant_control_state import load_control_state
 
@@ -47,6 +48,7 @@ DASHBOARD_CSV_FIELDS = [
     "executed_trades",
     "weights_mr",
     "weights_mo",
+    "weights_vb",
 ]
 
 
@@ -314,6 +316,7 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
             weights = feedback.strategy_weights
             mr = mean_reversion_signal(snap, entry_threshold=cfg.mr_threshold)
             mo = momentum_signal(snap, momentum_threshold=cfg.mom_threshold)
+            vb = volatility_breakout_signal(snap, breakout_factor=1.2)
             mr = mr.__class__(
                 strategy=mr.strategy,
                 action=mr.action,
@@ -325,6 +328,12 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                 action=mo.action,
                 confidence=min(1.0, mo.confidence * weights.get("momentum", 0.5)),
                 reason=mo.reason,
+            )
+            vb = vb.__class__(
+                strategy=vb.strategy,
+                action=vb.action,
+                confidence=min(1.0, vb.confidence * weights.get("volatility_breakout", 0.2)),
+                reason=vb.reason,
             )
 
             if not bool(strategy_switches.get("mean_reversion", True)):
@@ -341,14 +350,23 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                     confidence=0.0,
                     reason="strategy_disabled",
                 )
+            if not bool(strategy_switches.get("volatility_breakout", True)):
+                vb = vb.__class__(
+                    strategy=vb.strategy,
+                    action="HOLD",
+                    confidence=0.0,
+                    reason="strategy_disabled",
+                )
 
             logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
             logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
+            logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
 
             signal_trace = (
                 f"price={tick.price:.4f} "
                 f"mr={mr.action}:{mr.confidence:.3f}:{mr.reason} "
-                f"mo={mo.action}:{mo.confidence:.3f}:{mo.reason}"
+                f"mo={mo.action}:{mo.confidence:.3f}:{mo.reason} "
+                f"vb={vb.action}:{vb.confidence:.3f}:{vb.reason}"
             )
             signal_payload = {
                 "mean_reversion": {
@@ -361,12 +379,21 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
                     "confidence": mo.confidence,
                     "reason": mo.reason,
                 },
+                "volatility_breakout": {
+                    "action": vb.action,
+                    "confidence": vb.confidence,
+                    "reason": vb.reason,
+                },
             }
 
-            chosen = evaluate_signals([mr, mo], confidence_threshold=dynamic_conf_threshold)
+            chosen = evaluate_signals([mr, mo, vb], confidence_threshold=dynamic_conf_threshold)
             if chosen is None:
                 stage = "no_signal"
-                if not bool(strategy_switches.get("mean_reversion", True)) and not bool(strategy_switches.get("momentum", True)):
+                if (
+                    not bool(strategy_switches.get("mean_reversion", True))
+                    and not bool(strategy_switches.get("momentum", True))
+                    and not bool(strategy_switches.get("volatility_breakout", True))
+                ):
                     no_signal_reason = "all_strategies_disabled"
                 else:
                     no_signal_reason = "confidence_below_threshold"
@@ -568,6 +595,7 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
         "sharpe_ratio": float(metrics["sharpe_ratio"]),
         "mean_reversion_weight": float(feedback.strategy_weights["mean_reversion"]),
         "momentum_weight": float(feedback.strategy_weights["momentum"]),
+        "volatility_breakout_weight": float(feedback.strategy_weights.get("volatility_breakout", 0.0)),
         "ticks_processed": float(tick_counter),
     }
 
@@ -612,6 +640,7 @@ def _write_dashboard(
             "executed_trades": executed_trades,
             "weights_mr": w.get("mean_reversion"),
             "weights_mo": w.get("momentum"),
+            "weights_vb": w.get("volatility_breakout"),
         },
     )
 

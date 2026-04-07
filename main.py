@@ -45,7 +45,7 @@ class FeedbackLoop:
     """
 
     strategy_weights: Dict[str, float] = field(
-        default_factory=lambda: {"mean_reversion": 0.5, "momentum": 0.5}
+        default_factory=lambda: {"mean_reversion": 0.4, "momentum": 0.4, "volatility_breakout": 0.2}
     )
     learning_rate: float = 0.02
     max_delta_per_step: float = 0.01

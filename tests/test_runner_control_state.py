@@ -56,7 +56,7 @@ class TestRunnerControlState(unittest.TestCase):
         control_state = {
             "trading_enabled": False,
             "kill_switch": False,
-            "strategies": {"mean_reversion": True, "momentum": True},
+            "strategies": {"mean_reversion": True, "momentum": True, "volatility_breakout": True},
             "risk": {
                 "confidence_threshold": 0.35,
                 "max_position_size": 5.0,
@@ -82,6 +82,9 @@ class TestRunnerControlState(unittest.TestCase):
         ), patch(
             "alpaca_paper_runner.momentum_signal",
             return_value=StrategySignal("momentum", "buy", 0.8, "test_signal"),
+        ), patch(
+            "alpaca_paper_runner.volatility_breakout_signal",
+            return_value=StrategySignal("volatility_breakout", "buy", 0.7, "test_signal"),
         ), patch("alpaca_paper_runner.load_control_state", return_value=control_state), patch(
             "alpaca_paper_runner.AlpacaPaperExecutionEngine", new=FakeExecutionEngine
         ), patch("alpaca_paper_runner._write_dashboard", return_value=None), patch(

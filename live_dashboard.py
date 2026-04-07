@@ -51,6 +51,7 @@ def dashboard_row(
         "symbol": symbol,
         "weights_mean_reversion": weights.get("mean_reversion"),
         "weights_momentum": weights.get("momentum"),
+        "weights_volatility_breakout": weights.get("volatility_breakout"),
         **metrics,
     }
     if extra:

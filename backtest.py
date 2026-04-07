@@ -17,6 +17,7 @@ from research_store import ResearchDatasetStore
 from risk_manager import check_risk
 from strategies.mean_reversion import generate_signal as mean_reversion_signal
 from strategies.momentum import generate_signal as momentum_signal
+from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
 from strategy_evaluator import evaluate_signals
 
 
@@ -73,11 +74,13 @@ def run_backtest(
 		)
 		perf = PerformanceTracker(initial_equity=float(cfg.get("initial_cash", 100000.0)))
 		strategy_weights = {
-			"mean_reversion": float(cfg.get("w_mean_reversion", 0.5)),
-			"momentum": float(cfg.get("w_momentum", 0.5)),
+			"mean_reversion": float(cfg.get("w_mean_reversion", 0.4)),
+			"momentum": float(cfg.get("w_momentum", 0.4)),
+			"volatility_breakout": float(cfg.get("w_volatility_breakout", 0.2)),
 		}
 		mr_threshold = float(cfg.get("mr_threshold", 0.003))
 		mom_threshold = float(cfg.get("mom_threshold", 0.002))
+		vb_breakout_factor = float(cfg.get("vb_breakout_factor", 1.2))
 		confidence_threshold = float(cfg.get("confidence_threshold", 0.6))
 		trade_size = float(cfg.get("trade_size", 1.0))
 		max_position_size = float(cfg.get("max_position_size", 5.0))
@@ -125,6 +128,7 @@ def run_backtest(
 
 			mr = mean_reversion_signal(snap, entry_threshold=mr_threshold)
 			mo = momentum_signal(snap, momentum_threshold=mom_threshold)
+			vb = volatility_breakout_signal(snap, breakout_factor=vb_breakout_factor)
 			mr = mr.__class__(
 				strategy=mr.strategy,
 				action=mr.action,
@@ -137,10 +141,17 @@ def run_backtest(
 				confidence=min(1.0, mo.confidence * strategy_weights.get("momentum", 0.5)),
 				reason=mo.reason,
 			)
+			vb = vb.__class__(
+				strategy=vb.strategy,
+				action=vb.action,
+				confidence=min(1.0, vb.confidence * strategy_weights.get("volatility_breakout", 0.2)),
+				reason=vb.reason,
+			)
 			if research_store is not None:
 				research_store.log_signal(ts.isoformat(), mr.strategy, mr.action, mr.confidence, mr.reason)
 				research_store.log_signal(ts.isoformat(), mo.strategy, mo.action, mo.confidence, mo.reason)
-			chosen = evaluate_signals([mr, mo], confidence_threshold=confidence_threshold)
+				research_store.log_signal(ts.isoformat(), vb.strategy, vb.action, vb.confidence, vb.reason)
+			chosen = evaluate_signals([mr, mo, vb], confidence_threshold=confidence_threshold)
 			if chosen is None:
 				if iterative_tuning and i > 0 and i % tune_interval == 0:
 					market = regime_detector.detect(recent_prices)

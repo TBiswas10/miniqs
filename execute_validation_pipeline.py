@@ -27,6 +27,7 @@ from portfolio import Portfolio
 from risk_manager import check_risk
 from strategies.mean_reversion import generate_signal as mean_reversion_signal
 from strategies.momentum import generate_signal as momentum_signal
+from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
 from strategy_evaluator import evaluate_signals
 from stress_testing import (
     generate_spike_scenario,
@@ -351,7 +352,8 @@ class ValidationPipeline:
                 # Generate signals
                 mr = mean_reversion_signal(snap, entry_threshold=float(cfg.get("mr_threshold", 0.003)))
                 mo = momentum_signal(snap, momentum_threshold=float(cfg.get("mom_threshold", 0.002)))
-                chosen = evaluate_signals([mr, mo], confidence_threshold=float(cfg.get("confidence_threshold", 0.6)))
+                vb = volatility_breakout_signal(snap, breakout_factor=float(cfg.get("vb_breakout_factor", 1.2)))
+                chosen = evaluate_signals([mr, mo, vb], confidence_threshold=float(cfg.get("confidence_threshold", 0.6)))
 
                 if chosen is None:
                     continue

@@ -12,6 +12,7 @@ DEFAULT_CONTROL_STATE: Dict[str, Any] = {
     "strategies": {
         "mean_reversion": True,
         "momentum": True,
+        "volatility_breakout": True,
     },
     "risk": {
         "confidence_threshold": 0.60,
