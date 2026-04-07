@@ -8,3 +8,7 @@ msgpack>=1.0.0
 
 # Loads local environment variables from `.env`
 python-dotenv>=1.0.0
+
+# Decision Intelligence Terminal backend
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0

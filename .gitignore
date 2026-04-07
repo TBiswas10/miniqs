@@ -4,3 +4,7 @@ __pycache__/
 *.db
 logs/
 validation_reports/
+node_modules/
+.next/
+decision_terminal/frontend/node_modules/
+decision_terminal/frontend/.next/

@@ -1,0 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  @apply bg-terminal-bg text-terminal-text font-sans antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3440 #10151c;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #2a3440;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #10151c;
+}
+
+.terminal-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 12px;
+}
+
+.bottom-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 1280px) {
+  .terminal-grid,
+  .bottom-grid {
+    grid-template-columns: 1fr;
+  }
+}

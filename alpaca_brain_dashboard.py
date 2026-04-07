@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -141,32 +142,63 @@ HTML = r"""<!doctype html>
       align-items: center;
     }
 
-    .control-button {
-      appearance: none;
-      border: 1px solid rgba(157, 223, 202, 0.28);
-      color: var(--text);
-      background: linear-gradient(180deg, rgba(15, 29, 34, 0.92), rgba(12, 18, 26, 0.88));
-      padding: 11px 15px;
-      border-radius: 999px;
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.22em;
+    .reason-banner {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(157, 223, 202, 0.22);
+      background: linear-gradient(180deg, rgba(157, 223, 202, 0.08), rgba(17, 24, 34, 0.78));
+      color: #d8efe6;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .ops-grid {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .mini-panel {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .mini-panel .k {
+      color: var(--muted);
+      font-size: 10px;
       text-transform: uppercase;
-      cursor: pointer;
-      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+      letter-spacing: 0.18em;
+      margin-bottom: 8px;
     }
 
-    .control-button:hover {
-      transform: translateY(-1px);
-      border-color: rgba(157, 223, 202, 0.55);
-      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.3);
+    .mini-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      margin-bottom: 4px;
     }
 
-    .control-button[data-active="true"] {
-      background: linear-gradient(180deg, rgba(157, 223, 202, 0.18), rgba(15, 29, 34, 0.95));
-      border-color: rgba(157, 223, 202, 0.55);
-      box-shadow: 0 0 0 1px rgba(157, 223, 202, 0.18), 0 16px 36px rgba(0, 0, 0, 0.28);
+    .mini-row span:last-child {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .mini-row .warn {
+      color: var(--danger);
+    }
+
+    .mini-row .ok {
+      color: var(--ok);
+    }
+
+    .mini-row:last-child {
+      margin-bottom: 0;
     }
 
     .flow-shell {
@@ -474,6 +506,11 @@ HTML = r"""<!doctype html>
       overflow: hidden;
     }
 
+    .confidence-spark {
+      margin-top: 10px;
+      height: 92px;
+    }
+
     .spark svg {
       width: 100%;
       height: 100%;
@@ -580,10 +617,9 @@ HTML = r"""<!doctype html>
           as a control-room style observatory.
         </p>
         <div class="hero-actions">
-          <button class="control-button" id="slow-toggle" type="button" data-active="false">Slow down</button>
-          <div class="badge"><span class="dot pulse"></span><span id="speed-label">live speed</span></div>
-          <div class="badge">one-command mode</div>
+          <div class="badge"><span class="dot pulse"></span><span id="speed-label">live monitoring</span></div>
         </div>
+        <div class="reason-banner" id="decision-reason">Waiting for live trace.</div>
         <div class="flow-shell">
           <div class="flow-header">
             <div class="flow-title">Execution flow</div>
@@ -665,6 +701,11 @@ HTML = r"""<!doctype html>
           <svg id="sparkline" viewBox="0 0 800 120" preserveAspectRatio="none"></svg>
         </div>
 
+        <div class="spark confidence-spark">
+          <div class="spark-label">Confidence path</div>
+          <svg id="confline" viewBox="0 0 800 120" preserveAspectRatio="none"></svg>
+        </div>
+
         <div class="signal-row">
           <div class="k">Mean reversion</div>
           <div class="v" id="mr-signal">--</div>
@@ -680,6 +721,21 @@ HTML = r"""<!doctype html>
         <div class="signal-row">
           <div class="k">Risk reason</div>
           <div class="v" id="risk-reason">--</div>
+        </div>
+
+        <div class="ops-grid">
+          <div class="mini-panel">
+            <div class="k">Stream health</div>
+            <div class="mini-row"><span>Last tick age</span><span id="health-tick-age">--</span></div>
+            <div class="mini-row"><span>Reconnects</span><span id="health-reconnects">0</span></div>
+            <div class="mini-row"><span>Auth failures</span><span id="health-auth" class="warn">0</span></div>
+          </div>
+          <div class="mini-panel">
+            <div class="k">Risk scoreboard</div>
+            <div class="mini-row"><span>Allowed</span><span id="risk-allowed" class="ok">0</span></div>
+            <div class="mini-row"><span>Cooldown blocks</span><span id="risk-cooldown">0</span></div>
+            <div class="mini-row"><span>Position/loss/other</span><span id="risk-other">0</span></div>
+          </div>
         </div>
       </section>
     </div>
@@ -706,7 +762,6 @@ HTML = r"""<!doctype html>
 
     let refreshIntervalMs = 2000;
     let refreshTimer = null;
-    let slowMode = false;
 
     function fmt(n, digits = 2) {
       const num = Number(n);
@@ -727,6 +782,16 @@ HTML = r"""<!doctype html>
     function signalText(signal) {
       if (!signal) return '--';
       return `${signal.action} · ${fmt(signal.confidence, 3)} · ${signal.reason || ''}`.trim();
+    }
+
+    function ageText(seconds) {
+      const value = Number(seconds);
+      if (!Number.isFinite(value)) return '--';
+      if (value < 1) return '<1s';
+      if (value < 60) return `${Math.round(value)}s`;
+      const mins = Math.floor(value / 60);
+      const secs = Math.round(value % 60);
+      return `${mins}m ${secs}s`;
     }
 
     function renderSparkline(points) {
@@ -760,6 +825,40 @@ HTML = r"""<!doctype html>
       `;
     }
 
+    function renderConfidenceLine(points) {
+      const svg = document.getElementById('confline');
+      if (!svg) return;
+      if (!points || !points.length) {
+        svg.innerHTML = '';
+        return;
+      }
+      const values = points.map(p => Number(p.confidence)).filter(v => Number.isFinite(v));
+      if (!values.length) {
+        svg.innerHTML = '';
+        return;
+      }
+      const w = 800;
+      const h = 120;
+      const pad = 10;
+      const xStep = (w - pad * 2) / Math.max(values.length - 1, 1);
+      const coords = values.map((v, i) => {
+        const x = pad + i * xStep;
+        const y = h - pad - (Math.max(Math.min(v, 1), 0)) * (h - pad * 2);
+        return `${x},${y}`;
+      }).join(' ');
+      const thresholdY = h - pad - (0.60 * (h - pad * 2));
+      svg.innerHTML = `
+        <defs>
+          <linearGradient id="confGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#f0bf6b"/>
+            <stop offset="100%" stop-color="#9ddfca"/>
+          </linearGradient>
+        </defs>
+        <line x1="${pad}" y1="${thresholdY}" x2="${w - pad}" y2="${thresholdY}" stroke="rgba(255,122,122,0.45)" stroke-dasharray="6 6" />
+        <polyline fill="none" stroke="url(#confGrad)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${coords}" />
+      `;
+    }
+
     function renderFlow(stage) {
       const nodes = document.querySelectorAll('.flow-node');
       const rank = stageRank(stage);
@@ -789,6 +888,15 @@ HTML = r"""<!doctype html>
       document.getElementById('mo-signal').textContent = signalText(summary.momentum);
       document.getElementById('chosen-signal').textContent = summary.chosen ? `${summary.chosen.strategy} · ${summary.chosen.action} · ${fmt(summary.chosen.confidence, 3)} · ${summary.chosen.reason || ''}` : '--';
       document.getElementById('risk-reason').textContent = summary.risk ? (summary.risk.allowed ? 'allowed' : `blocked · ${summary.risk.reason || ''}`) : '--';
+      document.getElementById('decision-reason').textContent = summary.decision_reason || 'Waiting for live trace.';
+      document.getElementById('health-tick-age').textContent = ageText(summary.last_tick_age_seconds);
+      document.getElementById('health-reconnects').textContent = String(summary.stream_reconnects ?? 0);
+      document.getElementById('health-auth').textContent = String(summary.auth_failures ?? 0);
+      const riskCounts = summary.risk_counts || {};
+      document.getElementById('risk-allowed').textContent = String(riskCounts.allowed ?? 0);
+      document.getElementById('risk-cooldown').textContent = String(riskCounts.cooldown ?? 0);
+      const otherTotal = Number(riskCounts.position ?? 0) + Number(riskCounts.loss ?? 0) + Number(riskCounts.other ?? 0);
+      document.getElementById('risk-other').textContent = String(otherTotal);
       renderFlow(summary.stage);
     }
 
@@ -800,15 +908,13 @@ HTML = r"""<!doctype html>
       }
       list.innerHTML = events.slice().reverse().map((event, index) => {
         const details = [
-          event.kind ? `kind=${event.kind}` : null,
           event.symbol ? `symbol=${event.symbol}` : null,
           Number.isFinite(Number(event.price)) ? `price=${fmt(event.price, 4)}` : null,
-          event.detail ? `detail=${event.detail}` : null,
           event.decision ? `decision=${event.decision}` : null,
           event.trade && event.trade.status === 'executed' ? `trade=${event.trade.action}@${fmt(event.trade.price, 4)}` : null,
           event.risk ? `risk=${event.risk.allowed ? 'allowed' : event.risk.reason}` : null,
         ].filter(Boolean).join(' · ');
-        const traceText = JSON.stringify(event, null, 2);
+        const traceText = event.detail || 'Open event for full payload.';
         return `
           <article class="trace-card" data-kind="${event.kind || 'decision'}" data-stage="${event.stage || ''}" style="--trace-index:${index}">
             <div class="trace-meta">
@@ -817,23 +923,13 @@ HTML = r"""<!doctype html>
             </div>
             <div class="trace-stage">${stageLabel(event.stage || event.kind || 'event')}</div>
             <div class="trace-body">${details || '—'}\n\n${traceText}</div>
+            <details style="margin-top:8px;">
+              <summary style="cursor:pointer;color:var(--muted);font-size:11px;">raw payload</summary>
+              <pre style="white-space:pre-wrap;color:#9fb0c0;font-size:11px;line-height:1.5;">${JSON.stringify(event, null, 2)}</pre>
+            </details>
           </article>
         `;
       }).join('');
-    }
-
-    function setPlaybackMode(isSlow) {
-      slowMode = isSlow;
-      refreshIntervalMs = slowMode ? 4200 : 2000;
-      document.documentElement.style.setProperty('--trace-duration', slowMode ? '1100ms' : '450ms');
-      document.documentElement.style.setProperty('--trace-stagger', slowMode ? '150ms' : '70ms');
-      const button = document.getElementById('slow-toggle');
-      const label = document.getElementById('speed-label');
-      if (button) button.dataset.active = slowMode ? 'true' : 'false';
-      if (button) button.textContent = slowMode ? 'Speed up' : 'Slow down';
-      if (label) label.textContent = slowMode ? 'slow motion' : 'live speed';
-      restartPolling();
-      refresh();
     }
 
     function restartPolling() {
@@ -849,14 +945,15 @@ HTML = r"""<!doctype html>
         renderStats(summary);
         renderTrace(data.events || []);
         renderSparkline(data.price_points || []);
+        renderConfidenceLine(data.confidence_points || []);
         document.getElementById('last-updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (error) {
         document.getElementById('last-updated').textContent = 'offline';
       }
     }
 
-    document.getElementById('slow-toggle').addEventListener('click', () => setPlaybackMode(!slowMode));
-    setPlaybackMode(false);
+    restartPolling();
+    refresh();
   </script>
 </body>
 </html>
@@ -901,6 +998,20 @@ class BrainTraceStore:
         except Exception:
             return {}
 
+    def _parse_ts(self, value: Any) -> Optional[datetime]:
+      if not isinstance(value, str) or not value:
+        return None
+      raw = value.strip()
+      if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+      try:
+        dt = datetime.fromisoformat(raw)
+      except ValueError:
+        return None
+      if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+      return dt
+
     def load_state(self) -> Dict[str, Any]:
         events = self._read_jsonl(self.cfg.brain_trace_jsonl, MAX_EVENTS)
         dashboard_events = self._read_jsonl(self.cfg.live_dashboard_jsonl, 40)
@@ -917,7 +1028,31 @@ class BrainTraceStore:
             "latest_confidence": None,
             "latest_risk": None,
             "connection_state": "connected" if latest_connection else "waiting",
+          "decision_reason": "Waiting for live trace.",
+          "last_tick_age_seconds": None,
+          "stream_reconnects": 0,
+          "auth_failures": 0,
+          "risk_counts": {
+            "allowed": 0,
+            "cooldown": 0,
+            "position": 0,
+            "loss": 0,
+            "other": 0,
+          },
         }
+
+        summary["stream_reconnects"] = sum(
+          1
+          for event in events
+          if event.get("kind") == "connection" and "reconnect" in str(event.get("event", "")).lower()
+        )
+        summary["auth_failures"] = sum(
+          1
+          for event in events
+          if event.get("kind") == "connection"
+          and ("auth" in str(event.get("event", "")).lower() or "auth" in str(event.get("detail", "")).lower())
+          and ("fail" in str(event.get("event", "")).lower() or "timeout" in str(event.get("detail", "")).lower())
+        )
 
         decision_trade_counts = [
           int(event.get("executed_trades", 0))
@@ -938,6 +1073,27 @@ class BrainTraceStore:
             summary["risk"] = latest_decision.get("risk")
             summary["trade"] = latest_decision.get("trade")
             summary["portfolio_after"] = latest_decision.get("portfolio_after")
+
+            chosen = latest_decision.get("chosen")
+            risk = latest_decision.get("risk")
+            decision = latest_decision.get("decision")
+            detail = latest_decision.get("detail")
+            if isinstance(risk, dict) and risk.get("allowed") is False:
+                summary["decision_reason"] = f"No trade: risk blocked ({risk.get('reason') or 'unknown reason'})."
+            elif isinstance(chosen, dict):
+                summary["decision_reason"] = (
+                    f"{str(chosen.get('action', 'hold')).upper()} from {chosen.get('strategy', 'strategy')} "
+                    f"at confidence {float(chosen.get('confidence', 0.0)):.3f}."
+                )
+            elif isinstance(decision, str) and decision.lower() == "warmup":
+                summary["decision_reason"] = "Warming up feature windows before taking trades."
+            elif isinstance(detail, str) and detail:
+                summary["decision_reason"] = f"No trade: {detail.replace('_', ' ')}."
+
+            ts_value = latest_decision.get("timestamp") or latest_decision.get("ts")
+            tick_ts = self._parse_ts(ts_value)
+            if tick_ts is not None:
+                summary["last_tick_age_seconds"] = max((datetime.now(timezone.utc) - tick_ts).total_seconds(), 0.0)
         else:
             summary["mean_reversion"] = None
             summary["momentum"] = None
@@ -946,16 +1102,54 @@ class BrainTraceStore:
             summary["trade"] = None
             summary["portfolio_after"] = None
 
+        for event in events:
+            if event.get("kind") != "decision":
+                continue
+            risk = event.get("risk")
+            if not isinstance(risk, dict):
+                continue
+            if risk.get("allowed"):
+                summary["risk_counts"]["allowed"] += 1
+                continue
+            reason = str(risk.get("reason", "")).lower()
+            if "cooldown" in reason:
+                summary["risk_counts"]["cooldown"] += 1
+            elif "position" in reason:
+                summary["risk_counts"]["position"] += 1
+            elif "loss" in reason or "drawdown" in reason:
+                summary["risk_counts"]["loss"] += 1
+            else:
+                summary["risk_counts"]["other"] += 1
+
         price_points = [
             {"price": event.get("price"), "tick": event.get("tick")}
             for event in events
             if event.get("kind") == "decision" and isinstance(event.get("price"), (int, float))
         ][-120:]
 
+        confidence_points = []
+        for event in events:
+          if event.get("kind") != "decision":
+            continue
+          chosen = event.get("chosen") if isinstance(event.get("chosen"), dict) else None
+          if chosen is not None:
+            conf_value = float(chosen.get("confidence", 0.0) or 0.0)
+          else:
+            signals = event.get("signals") if isinstance(event.get("signals"), dict) else {}
+            mr = signals.get("mean_reversion") if isinstance(signals.get("mean_reversion"), dict) else {}
+            mo = signals.get("momentum") if isinstance(signals.get("momentum"), dict) else {}
+            conf_value = max(
+              float(mr.get("confidence", 0.0) or 0.0),
+              float(mo.get("confidence", 0.0) or 0.0),
+            )
+          confidence_points.append({"confidence": conf_value, "tick": event.get("tick")})
+        confidence_points = confidence_points[-120:]
+
         return {
             "summary": summary,
             "events": events[-40:],
             "price_points": price_points,
+            "confidence_points": confidence_points,
             "snapshot": snapshot,
             "dashboard_events": dashboard_events,
             "latest_trade_update": latest_trade,
