@@ -13,14 +13,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from alpaca_config import AlpacaConfig
 from alpaca_data_stream import stream_alpaca_ticks
 from alpaca_execution import AlpacaPaperExecutionEngine
 from alpaca_http import AlpacaPaperClient
 from alpaca_trading_stream import run_trading_stream_listener
+from event_bus import EventBus, EventDispatcher, FillEvent, MarketEvent, OrderEvent, SignalEvent
 from feature_engine import FeatureEngine
 from live_dashboard import append_csv_row, append_jsonl, dashboard_row, write_snapshot
 from logger import QuantLogger
@@ -28,10 +30,11 @@ from main import FeedbackLoop
 from performance import PerformanceTracker
 from portfolio import Portfolio
 from risk_manager import check_risk
-from strategies.mean_reversion import generate_signal as mean_reversion_signal
-from strategies.momentum import generate_signal as momentum_signal
-from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
-from strategy_evaluator import evaluate_signals
+from strategies import FunctionStrategy, StrategyRegistry, generate_weighted_signals
+from strategies.mean_reversion import generate_signal as mean_reversion_signal  # backward-compatible test patch target
+from strategies.momentum import generate_signal as momentum_signal  # backward-compatible test patch target
+from strategies.volatility_breakout import generate_signal as volatility_breakout_signal  # backward-compatible test patch target
+from strategy_evaluator import emit_signal_event, evaluate_signals
 from quant_control_state import load_control_state
 
 _log = logging.getLogger(__name__)
@@ -50,6 +53,29 @@ DASHBOARD_CSV_FIELDS = [
     "weights_mo",
     "weights_vb",
 ]
+
+
+def _strategy_registry() -> StrategyRegistry:
+    registry = StrategyRegistry()
+    registry.register(
+        FunctionStrategy(
+            name="mean_reversion",
+            generator=lambda features, **params: mean_reversion_signal(features, entry_threshold=float(params.get("entry_threshold", 0.003))),
+        )
+    )
+    registry.register(
+        FunctionStrategy(
+            name="momentum",
+            generator=lambda features, **params: momentum_signal(features, momentum_threshold=float(params.get("momentum_threshold", 0.002))),
+        )
+    )
+    registry.register(
+        FunctionStrategy(
+            name="volatility_breakout",
+            generator=lambda features, **params: volatility_breakout_signal(features, breakout_factor=float(params.get("breakout_factor", 1.2))),
+        )
+    )
+    return registry
 
 
 def _feature_engines(config: AlpacaConfig) -> Dict[str, FeatureEngine]:
@@ -122,6 +148,365 @@ def _write_brain_trace(cfg: AlpacaConfig, row: Dict[str, object]) -> None:
     append_jsonl(cfg.brain_trace_jsonl, row)
 
 
+@dataclass
+class AlpacaRuntime:
+    cfg: AlpacaConfig
+    logger: QuantLogger
+    perf: PerformanceTracker
+    feedback: FeedbackLoop
+    portfolio: Portfolio
+    alpaca_exec: AlpacaPaperExecutionEngine
+    strategy_registry: StrategyRegistry
+    engines: Dict[str, FeatureEngine]
+    primary: str
+    initial_equity: float
+    tick_counter: int = 0
+    executed_trades: int = 0
+    last_trade_timestamp: Optional[str] = None
+
+
+def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) -> None:
+    tick = event.tick
+    runtime.tick_counter += 1
+    stage = "market_data_tick"
+    if runtime.cfg.status_heartbeat_ticks > 0 and runtime.tick_counter % runtime.cfg.status_heartbeat_ticks == 0:
+        _log.info(
+            "[alpaca_runner] received tick=%s symbol=%s price=%.4f",
+            runtime.tick_counter,
+            tick.symbol,
+            tick.price,
+        )
+
+    if tick.symbol not in runtime.engines:
+        return
+    snap = runtime.engines[tick.symbol].update(tick)
+    if tick.symbol != runtime.primary:
+        return
+
+    runtime.portfolio.update_pnl(tick.price)
+    state = runtime.portfolio.get_portfolio_state()
+    runtime.perf.record_equity(float(state["equity"]))
+    runtime.logger.log_portfolio_snapshot(state)
+    metrics = runtime.perf.compute_metrics(latest_total_pnl=float(state["total_pnl"]))
+
+    control_state = load_control_state()
+    control_risk = control_state.get("risk", {}) if isinstance(control_state.get("risk"), dict) else {}
+    dynamic_conf_threshold = float(control_risk.get("confidence_threshold", runtime.cfg.confidence_threshold))
+    dynamic_max_position = float(control_risk.get("max_position_size", runtime.cfg.max_position_size))
+    dynamic_max_daily_loss = float(control_risk.get("max_daily_loss", runtime.cfg.max_loss_per_session))
+    strategy_switches = control_state.get("strategies", {}) if isinstance(control_state.get("strategies"), dict) else {}
+
+    base_trace: Dict[str, object] = {
+        "kind": "decision",
+        "tick": runtime.tick_counter,
+        "symbol": tick.symbol,
+        "stage": stage,
+        "timestamp": tick.timestamp.isoformat(),
+        "price": float(tick.price),
+        "position_size": float(state["position_size"]),
+        "equity": float(state["equity"]),
+        "total_pnl": float(state["total_pnl"]),
+        "executed_trades": runtime.executed_trades,
+        "controls": control_state,
+    }
+
+    if snap is None:
+        stage = "warmup"
+        _write_brain_trace(
+            runtime.cfg,
+            {
+                **base_trace,
+                "stage": stage,
+                "detail": "feature_window_not_ready",
+                "signals": None,
+                "decision": "warmup",
+            },
+        )
+        _emit_heartbeat(
+            cfg=runtime.cfg,
+            tick_counter=runtime.tick_counter,
+            stage=stage,
+            primary=runtime.primary,
+            executed_trades=runtime.executed_trades,
+            state=state,
+            metrics=metrics,
+            detail="feature_window_not_ready",
+            trace=f"price={tick.price:.4f} feature_engine=warming_up signals=pending",
+        )
+        if runtime.tick_counter % 100 == 0:
+            _write_dashboard(runtime.cfg, metrics, runtime.feedback, runtime.primary, runtime.executed_trades, "warmup", state)
+        return
+
+    stage = "signals_generated"
+    weights = runtime.feedback.strategy_weights
+    signals = generate_weighted_signals(
+        features=snap,
+        registry=runtime.strategy_registry,
+        weights=weights,
+        enabled={
+            "mean_reversion": bool(strategy_switches.get("mean_reversion", True)),
+            "momentum": bool(strategy_switches.get("momentum", True)),
+            "volatility_breakout": bool(strategy_switches.get("volatility_breakout", True)),
+        },
+        params={
+            "mean_reversion": {"entry_threshold": runtime.cfg.mr_threshold},
+            "momentum": {"momentum_threshold": runtime.cfg.mom_threshold},
+            "volatility_breakout": {"breakout_factor": runtime.cfg.vb_breakout_factor},
+        },
+    )
+    mr = signals["mean_reversion"]
+    mo = signals["momentum"]
+    vb = signals["volatility_breakout"]
+
+    runtime.logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
+    runtime.logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
+    runtime.logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
+
+    signal_trace = (
+        f"price={tick.price:.4f} "
+        f"mr={mr.action}:{mr.confidence:.3f}:{mr.reason} "
+        f"mo={mo.action}:{mo.confidence:.3f}:{mo.reason} "
+        f"vb={vb.action}:{vb.confidence:.3f}:{vb.reason}"
+    )
+    signal_payload = {
+        "mean_reversion": {"action": mr.action, "confidence": mr.confidence, "reason": mr.reason},
+        "momentum": {"action": mo.action, "confidence": mo.confidence, "reason": mo.reason},
+        "volatility_breakout": {"action": vb.action, "confidence": vb.confidence, "reason": vb.reason},
+    }
+
+    chosen = evaluate_signals([mr, mo, vb], confidence_threshold=dynamic_conf_threshold)
+    if chosen is None:
+        stage = "no_signal"
+        if (
+            not bool(strategy_switches.get("mean_reversion", True))
+            and not bool(strategy_switches.get("momentum", True))
+            and not bool(strategy_switches.get("volatility_breakout", True))
+        ):
+            no_signal_reason = "all_strategies_disabled"
+        else:
+            no_signal_reason = "confidence_below_threshold"
+        _write_brain_trace(
+            runtime.cfg,
+            {
+                **base_trace,
+                "stage": stage,
+                "signals": signal_payload,
+                "decision": "hold",
+                "chosen": None,
+                "risk": None,
+                "detail": no_signal_reason,
+            },
+        )
+        _emit_heartbeat(
+            cfg=runtime.cfg,
+            tick_counter=runtime.tick_counter,
+            stage=stage,
+            primary=runtime.primary,
+            executed_trades=runtime.executed_trades,
+            state=state,
+            metrics=metrics,
+            detail=no_signal_reason,
+            trace=signal_trace + " chosen=none",
+        )
+        if runtime.tick_counter % 50 == 0:
+            _write_dashboard(runtime.cfg, metrics, runtime.feedback, runtime.primary, runtime.executed_trades, "no_signal", state)
+        return
+
+    if not bool(control_state.get("trading_enabled", True)) or bool(control_state.get("kill_switch", False)):
+        stage = "trading_stopped"
+        reason = "kill_switch_engaged" if bool(control_state.get("kill_switch", False)) else "trading_disabled"
+        _write_brain_trace(
+            runtime.cfg,
+            {
+                **base_trace,
+                "stage": stage,
+                "signals": signal_payload,
+                "chosen": {
+                    "strategy": chosen.strategy,
+                    "action": chosen.action,
+                    "confidence": chosen.confidence,
+                    "reason": chosen.reason,
+                },
+                "risk": {"allowed": False, "reason": reason},
+                "detail": reason,
+            },
+        )
+        _emit_heartbeat(
+            cfg=runtime.cfg,
+            tick_counter=runtime.tick_counter,
+            stage=stage,
+            primary=runtime.primary,
+            executed_trades=runtime.executed_trades,
+            state=state,
+            metrics=metrics,
+            detail=reason,
+            trace=signal_trace + f" control={reason}",
+        )
+        return
+
+    signal_trace += f" chosen={chosen.strategy}:{chosen.action}:{chosen.confidence:.3f}:{chosen.reason}"
+    trade = {
+        "action": chosen.action,
+        "size": runtime.cfg.trade_size,
+        "confidence": chosen.confidence,
+        "price": tick.price,
+        "timestamp": tick.timestamp.isoformat(),
+        "strategy": chosen.strategy,
+        "symbol": runtime.primary,
+    }
+    risk_state: Dict[str, Any] = {
+        "current_position": float(state["position_size"]),
+        "last_trade_timestamp": runtime.last_trade_timestamp,
+        "session_loss": max(0.0, -float(state["total_pnl"])),
+        "max_position_size": dynamic_max_position,
+        "cooldown_seconds": runtime.cfg.cooldown_seconds,
+        "max_loss_per_session": dynamic_max_daily_loss,
+        "daily_loss_limit": runtime.cfg.daily_loss_limit,
+        "risk_per_trade": runtime.cfg.risk_per_trade,
+        "confidence_threshold": dynamic_conf_threshold,
+        "equity": float(state["equity"]),
+        "_meta": {
+            "base_trace": base_trace,
+            "signal_payload": signal_payload,
+            "chosen": {
+                "strategy": chosen.strategy,
+                "action": chosen.action,
+                "confidence": chosen.confidence,
+                "reason": chosen.reason,
+            },
+            "signal_trace": signal_trace,
+            "state": state,
+            "metrics": metrics,
+        },
+    }
+    emit_signal_event(bus=bus, chosen=chosen, trade=trade, risk_state=risk_state)
+
+
+def _on_signal_event(event: SignalEvent, bus: EventBus, runtime: AlpacaRuntime) -> None:
+    meta = event.risk_state.get("_meta", {}) if isinstance(event.risk_state.get("_meta"), dict) else {}
+    allow, risk_reason = check_risk(event.trade, event.risk_state)
+    if not allow:
+        stage = "risk_blocked"
+        base_trace = meta.get("base_trace", {}) if isinstance(meta.get("base_trace"), dict) else {}
+        signal_payload = meta.get("signal_payload", {}) if isinstance(meta.get("signal_payload"), dict) else {}
+        chosen = meta.get("chosen", {}) if isinstance(meta.get("chosen"), dict) else {}
+        _write_brain_trace(
+            runtime.cfg,
+            {
+                **base_trace,
+                "stage": stage,
+                "signals": signal_payload,
+                "chosen": chosen,
+                "risk": {"allowed": False, "reason": risk_reason},
+                "trade": event.trade,
+            },
+        )
+        _emit_heartbeat(
+            cfg=runtime.cfg,
+            tick_counter=runtime.tick_counter,
+            stage=stage,
+            primary=runtime.primary,
+            executed_trades=runtime.executed_trades,
+            state=meta.get("state", {}),
+            metrics=meta.get("metrics", {}),
+            detail=risk_reason,
+            trace=str(meta.get("signal_trace", "")) + f" risk=blocked:{risk_reason}",
+        )
+        runtime.logger.log_risk_block(risk_reason, json.dumps(event.trade, default=str))
+        return
+
+    trade_with_meta = dict(event.trade)
+    trade_with_meta["_meta"] = meta
+    bus.publish(OrderEvent(strategy=event.strategy, trade=trade_with_meta, reason="allowed"))
+
+
+def _on_order_event(event: OrderEvent, bus: EventBus, runtime: AlpacaRuntime) -> None:
+    trade = dict(event.trade)
+    meta = trade.pop("_meta", None)
+    try:
+        result = runtime.alpaca_exec.execute_trade(trade)
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("Alpaca execution failed: %s", exc)
+        runtime.logger.log_connection_event("execution", "error", str(exc))
+        base_trace = meta.get("base_trace", {}) if isinstance(meta, dict) and isinstance(meta.get("base_trace"), dict) else {}
+        signal_payload = meta.get("signal_payload", {}) if isinstance(meta, dict) and isinstance(meta.get("signal_payload"), dict) else {}
+        chosen = meta.get("chosen", {}) if isinstance(meta, dict) and isinstance(meta.get("chosen"), dict) else {}
+        _write_brain_trace(
+            runtime.cfg,
+            {
+                **base_trace,
+                "stage": "trade_submission_failed",
+                "signals": signal_payload,
+                "chosen": chosen,
+                "risk": {"allowed": True, "reason": event.reason},
+                "trade": trade,
+                "error": str(exc),
+            },
+        )
+        return
+
+    fill_trade = dict(trade)
+    fill_trade["_meta"] = meta
+    bus.publish(FillEvent(strategy=event.strategy, trade=fill_trade, result=result))
+
+
+def _on_fill_event(event: FillEvent, bus: EventBus, runtime: AlpacaRuntime) -> None:
+    meta = event.trade.get("_meta", {}) if isinstance(event.trade.get("_meta"), dict) else {}
+    runtime.last_trade_timestamp = str(event.trade.get("timestamp", ""))
+    runtime.executed_trades += 1
+    runtime.logger.log_trade(event.result, strategy=event.strategy)
+    runtime.perf.record_trade(float(event.result["realized_pnl_trade"]))
+    runtime.perf.record_strategy_trade(event.strategy, float(event.result["realized_pnl_trade"]))
+
+    st2 = runtime.portfolio.get_portfolio_state()
+    metrics = runtime.perf.compute_metrics(latest_total_pnl=float(st2["total_pnl"]))
+    _write_dashboard(runtime.cfg, metrics, runtime.feedback, runtime.primary, runtime.executed_trades, "trade", st2)
+
+    base_trace = meta.get("base_trace", {}) if isinstance(meta.get("base_trace"), dict) else {}
+    signal_payload = meta.get("signal_payload", {}) if isinstance(meta.get("signal_payload"), dict) else {}
+    chosen = meta.get("chosen", {}) if isinstance(meta.get("chosen"), dict) else {}
+    _write_brain_trace(
+        runtime.cfg,
+        {
+            **base_trace,
+            "stage": "trade_executed",
+            "signals": signal_payload,
+            "chosen": chosen,
+            "risk": {"allowed": True, "reason": "allowed"},
+            "executed_trades": runtime.executed_trades,
+            "executed_trades_before": max(0, runtime.executed_trades - 1),
+            "trade": event.result,
+            "portfolio_after": st2,
+        },
+    )
+
+    _emit_heartbeat(
+        cfg=runtime.cfg,
+        tick_counter=runtime.tick_counter,
+        stage="trade_executed",
+        primary=runtime.primary,
+        executed_trades=runtime.executed_trades,
+        state=st2,
+        metrics=metrics,
+        detail=f"order_id={event.result.get('alpaca_order_id', '')}",
+        trace=str(meta.get("signal_trace", "")) + f" trade=executed:{event.result.get('alpaca_order_id', '')}:{event.result.get('price', 0.0):.4f}",
+    )
+
+    if runtime.executed_trades % runtime.cfg.feedback_trade_interval == 0:
+        strategy_metrics = runtime.perf.strategy_metrics_for_feedback()
+        if strategy_metrics:
+            runtime.feedback.update(strategy_metrics, logger=runtime.logger)
+
+    if runtime.tick_counter % 200 == 0:
+        st_chk = runtime.portfolio.get_portfolio_state()
+        if float(st_chk["equity"]) < 0.8 * runtime.initial_equity:
+            runtime.logger.log_connection_event(
+                "monitor",
+                "equity_drawdown_warning",
+                f"equity={st_chk['equity']} initial={runtime.initial_equity}",
+            )
+
+
 async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dict[str, float]:
     """Alpaca paper: market data WS + optional trading WS + REST execution + feedback loop."""
     cfg = config or AlpacaConfig.from_env()
@@ -170,6 +555,8 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
         debug=True,
         fill_timeout_seconds=cfg.order_fill_timeout_seconds,
         poll_interval=cfg.order_poll_interval_seconds,
+        max_retries=cfg.execution_max_retries,
+        retry_backoff_seconds=cfg.execution_retry_backoff_seconds,
     )
 
     logger = QuantLogger(db_path=str(Path(cfg.db_dir) / "alpaca_logs.db"))
@@ -177,11 +564,26 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
     feedback = FeedbackLoop()
     engines = _feature_engines(cfg)
     primary = cfg.symbols[0].upper()
-
-    last_trade_timestamp = None
-    executed_trades = 0
-    tick_counter = 0
     initial_equity = initial_cash
+
+    runtime = AlpacaRuntime(
+        cfg=cfg,
+        logger=logger,
+        perf=perf,
+        feedback=feedback,
+        portfolio=portfolio,
+        alpaca_exec=alpaca_exec,
+        strategy_registry=_strategy_registry(),
+        engines=engines,
+        primary=primary,
+        initial_equity=initial_equity,
+    )
+    bus = EventBus()
+    dispatcher = EventDispatcher()
+    dispatcher.register(MarketEvent, _on_market_event)
+    dispatcher.register(SignalEvent, _on_signal_event)
+    dispatcher.register(OrderEvent, _on_order_event)
+    dispatcher.register(FillEvent, _on_fill_event)
 
     stop_trading_ws = asyncio.Event()
 
@@ -203,10 +605,18 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
         _log_trading_connection_event(logger, "trading_ws", component, detail)
         if component == "connected":
             _log.info("[alpaca_runner] trade logic connected")
+        elif component == "authenticated":
+            _log.info("[alpaca_runner] trade logic authenticated")
+        elif component == "subscribed":
+            _log.info("[alpaca_runner] trade update subscription active")
         elif component == "listening":
             _log.info("[alpaca_runner] trade update loop connected")
         elif component == "auth_failed":
             _log.info("[alpaca_runner] trade logic authentication failed")
+        elif component == "auth_timeout":
+            _log.info("[alpaca_runner] trade logic authentication timeout")
+        elif component == "reconnecting":
+            _log.info("[alpaca_runner] trade updates reconnecting")
         _write_brain_trace(
             cfg,
             {
@@ -233,6 +643,10 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
         _log.info("[alpaca_data_stream] %s%s", event, f": {detail}" if detail else "")
         if event == "market_data" and detail == "connected":
             _log.info("[alpaca_runner] data stream connected")
+        elif event == "market_data" and detail.startswith("subscribed"):
+            _log.info("[alpaca_runner] data stream subscription active")
+        elif event == "market_data_auth_failed":
+            _log.info("[alpaca_runner] data stream authentication failed")
         elif event == "market_data_reconnecting":
             _log.info("[alpaca_runner] data stream reconnecting")
         _write_brain_trace(
@@ -247,330 +661,12 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
 
     try:
         async for tick in stream_alpaca_ticks(cfg, on_connection_event=on_md_event):
-            tick_counter += 1
-            stage = "market_data_tick"
-            if cfg.status_heartbeat_ticks > 0 and tick_counter % cfg.status_heartbeat_ticks == 0:
-                _log.info("[alpaca_runner] received tick=%s symbol=%s price=%.4f", tick_counter, tick.symbol, tick.price)
-            if tick.symbol not in engines:
-                continue
-            snap = engines[tick.symbol].update(tick)
-            if tick.symbol != primary:
-                continue
-
-            portfolio.update_pnl(tick.price)
-            state = portfolio.get_portfolio_state()
-            perf.record_equity(float(state["equity"]))
-            logger.log_portfolio_snapshot(state)
-
-            metrics = perf.compute_metrics(latest_total_pnl=float(state["total_pnl"]))
-
-            control_state = load_control_state()
-            control_risk = control_state.get("risk", {}) if isinstance(control_state.get("risk"), dict) else {}
-            dynamic_conf_threshold = float(control_risk.get("confidence_threshold", cfg.confidence_threshold))
-            dynamic_max_position = float(control_risk.get("max_position_size", cfg.max_position_size))
-            dynamic_max_daily_loss = float(control_risk.get("max_daily_loss", cfg.max_loss_per_session))
-            strategy_switches = control_state.get("strategies", {}) if isinstance(control_state.get("strategies"), dict) else {}
-
-            base_trace: Dict[str, object] = {
-                "kind": "decision",
-                "tick": tick_counter,
-                "symbol": tick.symbol,
-                "stage": stage,
-                "timestamp": tick.timestamp.isoformat(),
-                "price": float(tick.price),
-                "position_size": float(state["position_size"]),
-                "equity": float(state["equity"]),
-                "total_pnl": float(state["total_pnl"]),
-                "executed_trades": executed_trades,
-                "controls": control_state,
-            }
-
-            if snap is None:
-                stage = "warmup"
-                _write_brain_trace(
-                    cfg,
-                    {
-                        **base_trace,
-                        "stage": stage,
-                        "detail": "feature_window_not_ready",
-                        "signals": None,
-                        "decision": "warmup",
-                    },
-                )
-                _emit_heartbeat(
-                    cfg=cfg,
-                    tick_counter=tick_counter,
-                    stage=stage,
-                    primary=primary,
-                    executed_trades=executed_trades,
-                    state=state,
-                    metrics=metrics,
-                    detail="feature_window_not_ready",
-                    trace=f"price={tick.price:.4f} feature_engine=warming_up signals=pending",
-                )
-                if tick_counter % 100 == 0:
-                    _write_dashboard(cfg, metrics, feedback, primary, executed_trades, "warmup", state)
-                continue
-
-            stage = "signals_generated"
-            weights = feedback.strategy_weights
-            mr = mean_reversion_signal(snap, entry_threshold=cfg.mr_threshold)
-            mo = momentum_signal(snap, momentum_threshold=cfg.mom_threshold)
-            vb = volatility_breakout_signal(snap, breakout_factor=1.2)
-            mr = mr.__class__(
-                strategy=mr.strategy,
-                action=mr.action,
-                confidence=min(1.0, mr.confidence * weights.get("mean_reversion", 0.5)),
-                reason=mr.reason,
-            )
-            mo = mo.__class__(
-                strategy=mo.strategy,
-                action=mo.action,
-                confidence=min(1.0, mo.confidence * weights.get("momentum", 0.5)),
-                reason=mo.reason,
-            )
-            vb = vb.__class__(
-                strategy=vb.strategy,
-                action=vb.action,
-                confidence=min(1.0, vb.confidence * weights.get("volatility_breakout", 0.2)),
-                reason=vb.reason,
-            )
-
-            if not bool(strategy_switches.get("mean_reversion", True)):
-                mr = mr.__class__(
-                    strategy=mr.strategy,
-                    action="HOLD",
-                    confidence=0.0,
-                    reason="strategy_disabled",
-                )
-            if not bool(strategy_switches.get("momentum", True)):
-                mo = mo.__class__(
-                    strategy=mo.strategy,
-                    action="HOLD",
-                    confidence=0.0,
-                    reason="strategy_disabled",
-                )
-            if not bool(strategy_switches.get("volatility_breakout", True)):
-                vb = vb.__class__(
-                    strategy=vb.strategy,
-                    action="HOLD",
-                    confidence=0.0,
-                    reason="strategy_disabled",
-                )
-
-            logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
-            logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
-            logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
-
-            signal_trace = (
-                f"price={tick.price:.4f} "
-                f"mr={mr.action}:{mr.confidence:.3f}:{mr.reason} "
-                f"mo={mo.action}:{mo.confidence:.3f}:{mo.reason} "
-                f"vb={vb.action}:{vb.confidence:.3f}:{vb.reason}"
-            )
-            signal_payload = {
-                "mean_reversion": {
-                    "action": mr.action,
-                    "confidence": mr.confidence,
-                    "reason": mr.reason,
-                },
-                "momentum": {
-                    "action": mo.action,
-                    "confidence": mo.confidence,
-                    "reason": mo.reason,
-                },
-                "volatility_breakout": {
-                    "action": vb.action,
-                    "confidence": vb.confidence,
-                    "reason": vb.reason,
-                },
-            }
-
-            chosen = evaluate_signals([mr, mo, vb], confidence_threshold=dynamic_conf_threshold)
-            if chosen is None:
-                stage = "no_signal"
-                if (
-                    not bool(strategy_switches.get("mean_reversion", True))
-                    and not bool(strategy_switches.get("momentum", True))
-                    and not bool(strategy_switches.get("volatility_breakout", True))
-                ):
-                    no_signal_reason = "all_strategies_disabled"
-                else:
-                    no_signal_reason = "confidence_below_threshold"
-                _write_brain_trace(
-                    cfg,
-                    {
-                        **base_trace,
-                        "stage": stage,
-                        "signals": signal_payload,
-                        "decision": "hold",
-                        "chosen": None,
-                        "risk": None,
-                        "detail": no_signal_reason,
-                    },
-                )
-                _emit_heartbeat(
-                    cfg=cfg,
-                    tick_counter=tick_counter,
-                    stage=stage,
-                    primary=primary,
-                    executed_trades=executed_trades,
-                    state=state,
-                    metrics=metrics,
-                    detail=no_signal_reason,
-                    trace=signal_trace + " chosen=none",
-                )
-                if tick_counter % 50 == 0:
-                    _write_dashboard(cfg, metrics, feedback, primary, executed_trades, "no_signal", state)
-                continue
-
-            if not bool(control_state.get("trading_enabled", True)) or bool(control_state.get("kill_switch", False)):
-                stage = "trading_stopped"
-                reason = "kill_switch_engaged" if bool(control_state.get("kill_switch", False)) else "trading_disabled"
-                _write_brain_trace(
-                    cfg,
-                    {
-                        **base_trace,
-                        "stage": stage,
-                        "signals": signal_payload,
-                        "chosen": {
-                            "strategy": chosen.strategy,
-                            "action": chosen.action,
-                            "confidence": chosen.confidence,
-                            "reason": chosen.reason,
-                        },
-                        "risk": {"allowed": False, "reason": reason},
-                        "detail": reason,
-                    },
-                )
-                _emit_heartbeat(
-                    cfg=cfg,
-                    tick_counter=tick_counter,
-                    stage=stage,
-                    primary=primary,
-                    executed_trades=executed_trades,
-                    state=state,
-                    metrics=metrics,
-                    detail=reason,
-                    trace=signal_trace + f" control={reason}",
-                )
-                continue
-
-            stage = "risk_check"
-            signal_trace += f" chosen={chosen.strategy}:{chosen.action}:{chosen.confidence:.3f}:{chosen.reason}"
-            trade = {
-                "action": chosen.action,
-                "size": cfg.trade_size,
-                "confidence": chosen.confidence,
-                "price": tick.price,
-                "timestamp": tick.timestamp.isoformat(),
-                "strategy": chosen.strategy,
-                "symbol": primary,
-            }
-            risk_state = {
-                "current_position": float(state["position_size"]),
-                "last_trade_timestamp": last_trade_timestamp,
-                "session_loss": max(0.0, -float(state["total_pnl"])),
-                "max_position_size": dynamic_max_position,
-                "cooldown_seconds": cfg.cooldown_seconds,
-                "max_loss_per_session": dynamic_max_daily_loss,
-            }
-            allow, risk_reason = check_risk(trade, risk_state)
-            if not allow:
-                stage = "risk_blocked"
-                _write_brain_trace(
-                    cfg,
-                    {
-                        **base_trace,
-                        "stage": stage,
-                        "signals": signal_payload,
-                        "chosen": {
-                            "strategy": chosen.strategy,
-                            "action": chosen.action,
-                            "confidence": chosen.confidence,
-                            "reason": chosen.reason,
-                        },
-                        "risk": {"allowed": False, "reason": risk_reason},
-                        "trade": trade,
-                    },
-                )
-                _emit_heartbeat(
-                    cfg=cfg,
-                    tick_counter=tick_counter,
-                    stage=stage,
-                    primary=primary,
-                    executed_trades=executed_trades,
-                    state=state,
-                    metrics=metrics,
-                    detail=risk_reason,
-                    trace=signal_trace + f" risk=blocked:{risk_reason}",
-                )
-                logger.log_risk_block(risk_reason, json.dumps(trade, default=str))
-                continue
-
-            try:
-                stage = "trade_submission"
-                result = alpaca_exec.execute_trade(trade)
-            except Exception as exc:  # noqa: BLE001
-                _log.exception("Alpaca execution failed: %s", exc)
-                logger.log_connection_event("execution", "error", str(exc))
-                continue
-
-            stage = "trade_executed"
-            last_trade_timestamp = trade["timestamp"]
-            executed_trades += 1
-            logger.log_trade(result, strategy=chosen.strategy)
-            perf.record_trade(float(result["realized_pnl_trade"]))
-            perf.record_strategy_trade(chosen.strategy, float(result["realized_pnl_trade"]))
-
-            st2 = portfolio.get_portfolio_state()
-            metrics = perf.compute_metrics(latest_total_pnl=float(st2["total_pnl"]))
-            _write_dashboard(cfg, metrics, feedback, primary, executed_trades, "trade", st2)
-            _write_brain_trace(
-                cfg,
-                {
-                    **base_trace,
-                    "stage": stage,
-                    "signals": signal_payload,
-                    "chosen": {
-                        "strategy": chosen.strategy,
-                        "action": chosen.action,
-                        "confidence": chosen.confidence,
-                        "reason": chosen.reason,
-                    },
-                    "risk": {"allowed": True, "reason": "allowed"},
-                    "executed_trades": executed_trades + 1,
-                    "executed_trades_before": executed_trades,
-                    "trade": result,
-                    "portfolio_after": st2,
-                },
-            )
-
-            _emit_heartbeat(
-                cfg=cfg,
-                tick_counter=tick_counter,
-                stage=stage,
-                primary=primary,
-                executed_trades=executed_trades,
-                state=st2,
-                metrics=metrics,
-                detail=f"order_id={result.get('alpaca_order_id', '')}",
-                trace=signal_trace + f" trade=executed:{result.get('alpaca_order_id', '')}:{result.get('price', 0.0):.4f}",
-            )
-
-            if executed_trades % cfg.feedback_trade_interval == 0:
-                strategy_metrics = perf.strategy_metrics_for_feedback()
-                if strategy_metrics:
-                    feedback.update(strategy_metrics, logger=logger)
-
-            if tick_counter % 200 == 0:
-                _st_chk = portfolio.get_portfolio_state()
-                if float(_st_chk["equity"]) < 0.8 * initial_equity:
-                    logger.log_connection_event(
-                        "monitor",
-                        "equity_drawdown_warning",
-                        f"equity={_st_chk['equity']} initial={initial_equity}",
-                    )
+            bus.publish(MarketEvent(tick=tick))
+            while len(bus) > 0:
+                next_event = bus.consume()
+                if next_event is None:
+                    break
+                dispatcher.dispatch(next_event, bus, runtime)
 
     except KeyboardInterrupt:
         _log.info("Session interrupted by user")
@@ -588,15 +684,15 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
     logger.log_performance_metrics(metrics)
 
     return {
-        "executed_trades": float(executed_trades),
+        "executed_trades": float(runtime.executed_trades),
         "total_pnl": float(metrics["total_pnl"]),
         "win_rate": float(metrics["win_rate"]),
         "max_drawdown": float(metrics["max_drawdown"]),
         "sharpe_ratio": float(metrics["sharpe_ratio"]),
-        "mean_reversion_weight": float(feedback.strategy_weights["mean_reversion"]),
-        "momentum_weight": float(feedback.strategy_weights["momentum"]),
-        "volatility_breakout_weight": float(feedback.strategy_weights.get("volatility_breakout", 0.0)),
-        "ticks_processed": float(tick_counter),
+        "mean_reversion_weight": float(runtime.feedback.strategy_weights["mean_reversion"]),
+        "momentum_weight": float(runtime.feedback.strategy_weights["momentum"]),
+        "volatility_breakout_weight": float(runtime.feedback.strategy_weights.get("volatility_breakout", 0.0)),
+        "ticks_processed": float(runtime.tick_counter),
     }
 
 

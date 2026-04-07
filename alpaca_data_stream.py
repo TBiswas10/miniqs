@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime, timezone
 from collections import deque
 from typing import AsyncIterator, Callable, Deque, Dict, Optional, Set
@@ -121,10 +122,12 @@ async def stream_alpaca_ticks(
 
     import websockets  # type: ignore
     import websockets.exceptions  # type: ignore
+    reconnect_attempts = 0
 
     while True:
         try:
             async with await _connect_market_ws(config) as ws:
+                reconnect_attempts = 0
                 if on_connection_event:
                     on_connection_event("market_data", "connected")
                 await ws.send(
@@ -132,6 +135,31 @@ async def stream_alpaca_ticks(
                         {"action": "auth", "key": config.api_key_id, "secret": config.api_secret_key}
                     )
                 )
+                authenticated = False
+                for _ in range(20):
+                    raw_auth = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                    if isinstance(raw_auth, bytes):
+                        raw_auth = raw_auth.decode("utf-8", errors="replace")
+                    try:
+                        auth_arr = json.loads(raw_auth)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(auth_arr, list):
+                        continue
+                    for auth_obj in auth_arr:
+                        if isinstance(auth_obj, dict) and auth_obj.get("T") == "success" and auth_obj.get("msg") == "authenticated":
+                            authenticated = True
+                            break
+                        if isinstance(auth_obj, dict) and auth_obj.get("T") == "error":
+                            msg = str(auth_obj.get("msg", auth_obj))
+                            if on_connection_event:
+                                on_connection_event("market_data_auth_failed", msg)
+                            raise RuntimeError(f"Alpaca market data auth failed: {msg}")
+                    if authenticated:
+                        break
+                if not authenticated:
+                    raise RuntimeError("Alpaca market data auth timeout")
+
                 sub: Dict[str, object] = {"action": "subscribe"}
                 syms = [s.upper() for s in config.symbols]
                 if config.subscribe_trades:
@@ -141,6 +169,8 @@ async def stream_alpaca_ticks(
                 if config.subscribe_bars:
                     sub["bars"] = syms
                 await ws.send(json.dumps(sub))
+                if on_connection_event:
+                    on_connection_event("market_data", f"subscribed:{','.join(syms)}")
                 backoff = config.reconnect_initial_seconds
 
                 async for raw in ws:
@@ -185,9 +215,20 @@ async def stream_alpaca_ticks(
 
         except asyncio.CancelledError:
             raise
+        except websockets.exceptions.ConnectionClosed as exc:  # type: ignore[attr-defined]
+            reconnect_attempts += 1
+            detail = f"closed code={getattr(exc, 'code', 'n/a')} reason={getattr(exc, 'reason', '')} attempt={reconnect_attempts}"
+            _log.warning("Market data WS closed: %s", detail)
+            if on_connection_event:
+                on_connection_event("market_data_reconnecting", detail)
+            jitter = random.uniform(0.0, 0.5)
+            await asyncio.sleep(backoff + jitter)
+            backoff = min(config.reconnect_max_seconds, backoff * 2.0)
         except Exception as exc:  # noqa: BLE001 — reconnect loop
+            reconnect_attempts += 1
             _log.exception("Market data WS error: %s", exc)
             if on_connection_event:
-                on_connection_event("market_data_reconnecting", str(exc))
-            await asyncio.sleep(backoff)
+                on_connection_event("market_data_reconnecting", f"attempt={reconnect_attempts} error={exc}")
+            jitter = random.uniform(0.0, 0.5)
+            await asyncio.sleep(backoff + jitter)
             backoff = min(config.reconnect_max_seconds, backoff * 2.0)

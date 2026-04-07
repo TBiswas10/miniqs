@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from execution import ExecutionEngine
 from portfolio import Portfolio
@@ -38,6 +39,27 @@ class TestExecutionPortfolio(unittest.TestCase):
             finally:
                 conn.close()
             self.assertEqual(count, 3)
+
+    def test_realistic_simulation_rejection_returns_safe_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "portfolio_test_reject.db")
+            portfolio = Portfolio(db_path=db_path, initial_cash=10000.0, fee_rate=0.001)
+            engine = ExecutionEngine(portfolio=portfolio, paper_mode=True, realistic_simulation=True)
+
+            rejected_report = {
+                "final_state": "rejected",
+                "filled_size": 0.0,
+                "remaining_size": 1.0,
+                "path": [{"state": "created"}, {"state": "submitted"}, {"state": "rejected"}],
+            }
+
+            with patch.object(engine.simulator, "simulate", return_value=rejected_report):
+                out = engine.execute_trade({"action": "buy", "size": 1.0, "price": 100.0})
+
+            self.assertEqual(out["status"], "rejected")
+            self.assertEqual(out["action"], "buy")
+            self.assertEqual(out["size"], 0.0)
+            self.assertEqual(out["filled_size"], 0.0)
 
 
 if __name__ == "__main__":

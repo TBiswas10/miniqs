@@ -196,6 +196,9 @@ def _snapshot() -> Dict[str, Any]:
     order_events = [ev for ev in events if ev["event_type"] == "order_update"]
     latest_signal = latest.get("signal") or {}
     latest_portfolio = latest.get("portfolio") or {}
+    latest_risk = latest.get("risk") or {}
+    controls = _control_copy()
+    control_risk = controls.get("risk", {}) if isinstance(controls.get("risk"), dict) else {}
 
     open_orders = []
     for order in reversed(order_events[-30:]):
@@ -224,6 +227,35 @@ def _snapshot() -> Dict[str, Any]:
     current_ts = str(latest_signal.get("ts") or datetime.now(timezone.utc).isoformat())
     signal_side = str(latest_signal.get("side", "HOLD")).upper()
     decision_action = "HOLD" if signal_side == "HOLD" else "EXECUTE"
+    equity = float(latest_portfolio.get("equity", 0.0))
+    pnl = float(latest_portfolio.get("total_pnl", 0.0))
+    position_size = float(latest_portfolio.get("position_size", 0.0))
+    price = float(latest_portfolio.get("price", 0.0))
+    exposure_notional = abs(position_size) * price
+    max_daily_loss = float(control_risk.get("max_daily_loss", 500.0))
+    confidence_threshold = float(control_risk.get("confidence_threshold", 0.35))
+    max_position_size = float(control_risk.get("max_position_size", 0.0))
+    daily_loss_used = max(0.0, -pnl)
+    daily_limit_utilization = (daily_loss_used / max_daily_loss) if max_daily_loss > 0 else 0.0
+    max_exposure_notional = abs(max_position_size) * price
+    exposure_utilization = (exposure_notional / max_exposure_notional) if max_exposure_notional > 0 else 0.0
+    halted = bool(controls.get("kill_switch", False)) or not bool(controls.get("trading_enabled", True))
+
+    reconnect_count = sum(
+        1
+        for ev in events[-200:]
+        if ev.get("event_type") == "risk_event" and str(ev.get("payload", {}).get("risk_type", "")) == "data_feed_failure"
+    )
+    last_tick_age_sec: int | None = None
+    if isinstance(latest_signal.get("ts"), str):
+        try:
+            tick_ts = datetime.fromisoformat(str(latest_signal.get("ts")))
+            now_ts = datetime.now(timezone.utc)
+            if tick_ts.tzinfo is None:
+                tick_ts = tick_ts.replace(tzinfo=timezone.utc)
+            last_tick_age_sec = max(0, int((now_ts - tick_ts).total_seconds()))
+        except ValueError:
+            last_tick_age_sec = None
 
     return {
         "decision": {
@@ -256,8 +288,8 @@ def _snapshot() -> Dict[str, Any]:
                 "price": float(latest_portfolio.get("price", 0.0)),
             },
             "account": {
-                "equity": float(latest_portfolio.get("equity", 0.0)),
-                "pnl": float(latest_portfolio.get("total_pnl", 0.0)),
+                "equity": equity,
+                "pnl": pnl,
                 "executed_trades": int(sum(1 for h in history if h["action"] == "EXECUTED")),
                 "cash": float(latest_portfolio.get("cash", 0.0)),
                 "open_orders": open_orders,
@@ -270,9 +302,33 @@ def _snapshot() -> Dict[str, Any]:
         "meta": {
             "connected": TRACE_PATH.exists(),
             "connection_event": "streaming" if TRACE_PATH.exists() else "waiting",
-            "reconnects": 0,
-            "last_tick_age_sec": 0,
-            "controls": _control_copy(),
+            "reconnects": reconnect_count,
+            "last_tick_age_sec": last_tick_age_sec,
+            "controls": controls,
+        },
+        "system_metrics": {
+            "equity": equity,
+            "pnl": pnl,
+            "daily_loss_used": daily_loss_used,
+            "daily_loss_limit": max_daily_loss,
+            "daily_limit_utilization": daily_limit_utilization,
+            "exposure_notional": exposure_notional,
+            "max_exposure_notional": max_exposure_notional,
+            "exposure_utilization": exposure_utilization,
+            "position_size": position_size,
+            "position_price": price,
+            "halted": halted,
+        },
+        "risk_state": {
+            "halted": halted,
+            "kill_switch": bool(controls.get("kill_switch", False)),
+            "trading_enabled": bool(controls.get("trading_enabled", True)),
+            "confidence_threshold": confidence_threshold,
+            "max_position_size": max_position_size,
+            "daily_loss_limit": max_daily_loss,
+            "latest_risk_type": str(latest_risk.get("risk_type", "")),
+            "latest_risk_reason": str(latest_risk.get("reason", "")),
+            "latest_risk_severity": str(latest_risk.get("severity", "info")),
         },
         "thought_stream": [
             {
@@ -323,6 +379,21 @@ def _snapshot() -> Dict[str, Any]:
 @app.get("/api/health")
 def health() -> Dict[str, bool]:
     return {"ok": True}
+
+
+    @app.get("/health")
+    def root_health() -> Dict[str, Any]:
+        snap = _snapshot()
+        system_metrics = snap.get("system_metrics", {}) if isinstance(snap.get("system_metrics"), dict) else {}
+        risk_state = snap.get("risk_state", {}) if isinstance(snap.get("risk_state"), dict) else {}
+        return {
+            "ok": True,
+            "service": "decision_terminal_backend",
+            "trace_connected": bool(snap.get("meta", {}).get("connected", False)),
+            "halted": bool(risk_state.get("halted", False)),
+            "equity": float(system_metrics.get("equity", 0.0)),
+            "pnl": float(system_metrics.get("pnl", 0.0)),
+        }
 
 
 @app.get("/api/decision/snapshot")
@@ -480,9 +551,16 @@ async def ws_events(ws: WebSocket) -> None:
 @app.websocket("/ws/decisions")
 async def ws_decisions(ws: WebSocket) -> None:
     await ws.accept()
+    queue = ENGINE.subscribe()
     try:
+        await ws.send_json(_snapshot())
         while True:
+            try:
+                await asyncio.wait_for(queue.get(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
             await ws.send_json(_snapshot())
-            await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         return
+    finally:
+        ENGINE.unsubscribe(queue)

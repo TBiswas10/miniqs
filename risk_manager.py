@@ -26,6 +26,11 @@ def _parse_timestamp(value: Any) -> datetime:
 @dataclass
 class RiskConfig:
 	base_trade_size: float = 1.0
+	risk_per_trade: float = 0.01
+	daily_loss_limit: float = 500.0
+	confidence_threshold: float = 0.35
+	max_exposure: float = 1.0
+	max_concurrent_positions: int = 1
 	max_position_size: float = 5.0
 	cooldown_seconds: int = 5
 	max_loss_per_session: float = 500.0
@@ -69,6 +74,15 @@ class RiskEngine:
 		action = str(trade.get("action", "hold")).lower()
 		strategy = str(trade.get("strategy", "unknown"))
 		adjusted_trade = dict(trade)
+		gate_state = dict(portfolio_state)
+		gate_state.setdefault("risk_per_trade", self.config.risk_per_trade)
+		gate_state.setdefault("daily_loss_limit", self.config.daily_loss_limit)
+		gate_state.setdefault("confidence_threshold", self.config.confidence_threshold)
+		gate_state.setdefault("max_exposure", self.config.max_exposure)
+		gate_state.setdefault("max_concurrent_positions", self.config.max_concurrent_positions)
+		gate_state.setdefault("max_position_size", self.config.max_position_size)
+		gate_state.setdefault("cooldown_seconds", self.config.cooldown_seconds)
+		gate_state.setdefault("max_loss_per_session", self.config.max_loss_per_session)
 
 		flags = {
 			"global_kill_switch": self.global_kill_switch,
@@ -80,31 +94,46 @@ class RiskEngine:
 		if self.strategy_kill_switch.get(strategy, False):
 			return False, f"blocked: strategy_kill_switch {strategy}", adjusted_trade, flags
 
-		current_equity = float(portfolio_state.get("equity", self.initial_equity))
+		current_equity = float(gate_state.get("equity", self.initial_equity))
 		self.peak_equity = max(self.peak_equity, current_equity)
 		portfolio_dd = (self.peak_equity - current_equity) / max(self.peak_equity, 1e-9)
+		gate_state.setdefault("portfolio_drawdown", portfolio_dd)
+		gate_state.setdefault("portfolio_drawdown_limit", self.config.portfolio_drawdown_limit)
 		if portfolio_dd >= self.config.portfolio_drawdown_limit:
 			self.global_kill_switch = True
 			flags["global_kill_switch"] = True
 			return False, "blocked: portfolio drawdown kill switch", adjusted_trade, flags
 
-		total_pnl = float(portfolio_state.get("total_pnl", 0.0))
+		total_pnl = float(gate_state.get("total_pnl", 0.0))
 		if total_pnl <= -abs(self.config.extreme_loss_kill_switch):
 			self.global_kill_switch = True
 			flags["global_kill_switch"] = True
 			return False, "blocked: extreme loss kill switch", adjusted_trade, flags
 
-		market_vol = float(portfolio_state.get("market_volatility", self.config.vol_target))
+		session_loss = float(gate_state.get("session_loss", max(0.0, -total_pnl)))
+		daily_limit = float(gate_state.get("daily_loss_limit", self.config.daily_loss_limit))
+		if daily_limit > 0 and session_loss >= daily_limit:
+			self.global_kill_switch = True
+			flags["global_kill_switch"] = True
+			return False, "blocked: daily loss kill switch", adjusted_trade, flags
+
+		market_vol = float(gate_state.get("market_volatility", self.config.vol_target))
 		confidence = float(trade.get("confidence", 0.5))
-		strategy_weight = float(portfolio_state.get("strategy_weight", 1.0))
+		strategy_weight = float(gate_state.get("strategy_weight", 1.0))
 		adjusted_size = self._volatility_scaled_size(
 			confidence=confidence,
 			market_volatility=market_vol,
 			strategy_weight=strategy_weight,
 		)
+		adjusted_size = self._size_capped_by_risk_budget(
+			raw_size=adjusted_size,
+			price=float(adjusted_trade.get("price", 0.0)),
+			equity=current_equity,
+			risk_per_trade=float(gate_state.get("risk_per_trade", self.config.risk_per_trade)),
+		)
 		adjusted_trade["size"] = adjusted_size
 
-		allow, reason = _basic_rule_checks(adjusted_trade, portfolio_state)
+		allow, reason = _basic_rule_checks(adjusted_trade, gate_state)
 		if not allow:
 			return False, reason, adjusted_trade, flags
 
@@ -134,6 +163,22 @@ class RiskEngine:
 		)
 		return max(self.config.min_trade_size, min(self.config.max_trade_size, raw_size))
 
+	def _size_capped_by_risk_budget(
+		self,
+		*,
+		raw_size: float,
+		price: float,
+		equity: float,
+		risk_per_trade: float,
+	) -> float:
+		if price <= 0 or equity <= 0 or risk_per_trade <= 0:
+			return raw_size
+		risk_notional = equity * risk_per_trade
+		max_size_by_risk = risk_notional / price
+		if max_size_by_risk <= 0:
+			return 0.0
+		return min(raw_size, max_size_by_risk)
+
 	def record_execution(self, strategy: str, realized_pnl_trade: float, equity: float) -> None:
 		self.peak_equity = max(self.peak_equity, float(equity))
 		self.strategy_live_pnl[strategy] = self.strategy_live_pnl.get(strategy, 0.0) + float(realized_pnl_trade)
@@ -155,6 +200,8 @@ class RiskEngine:
 def _basic_rule_checks(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -> Tuple[bool, str]:
 	action = str(trade.get("action", "hold")).lower()
 	size = float(trade.get("size", 0.0))
+	price = float(trade.get("price", 0.0))
+	confidence = float(trade.get("confidence", 0.0))
 	now = _parse_timestamp(trade.get("timestamp"))
 
 	if action not in {"buy", "sell", "hold"}:
@@ -165,12 +212,31 @@ def _basic_rule_checks(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -
 
 	current_position = float(portfolio_state.get("current_position", 0.0))
 	max_position_size = float(portfolio_state.get("max_position_size", 0.0))
+	open_positions_count = int(portfolio_state.get("open_positions_count", 1 if abs(current_position) > 1e-12 else 0))
+	max_concurrent_positions = int(portfolio_state.get("max_concurrent_positions", 0))
+	equity = float(portfolio_state.get("equity", 0.0))
+	risk_per_trade = float(portfolio_state.get("risk_per_trade", 0.0))
+	confidence_threshold = float(portfolio_state.get("confidence_threshold", 0.0))
+	max_exposure = float(portfolio_state.get("max_exposure", 0.0))
+	portfolio_drawdown = float(portfolio_state.get("portfolio_drawdown", portfolio_state.get("current_drawdown", 0.0)))
+	portfolio_drawdown_limit = float(portfolio_state.get("portfolio_drawdown_limit", 0.0))
 	cooldown_seconds = int(portfolio_state.get("cooldown_seconds", 0))
-	max_loss_per_session = float(portfolio_state.get("max_loss_per_session", 0.0))
+	max_loss_per_session = float(
+		portfolio_state.get(
+			"daily_loss_limit",
+			portfolio_state.get("max_loss_per_session", 0.0),
+		)
+	)
 	session_loss = float(portfolio_state.get("session_loss", 0.0))
 
+	if confidence_threshold > 0 and confidence < confidence_threshold:
+		return False, "blocked: confidence threshold not met"
+
 	if max_loss_per_session > 0 and session_loss >= max_loss_per_session:
-		return False, "blocked: max session loss reached"
+		return False, "blocked: daily loss kill switch"
+
+	if portfolio_drawdown_limit > 0 and portfolio_drawdown >= portfolio_drawdown_limit:
+		return False, "blocked: portfolio drawdown limit reached"
 
 	last_trade_ts = portfolio_state.get("last_trade_timestamp")
 	if last_trade_ts:
@@ -181,9 +247,23 @@ def _basic_rule_checks(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -
 	if action == "sell" and size > current_position + 1e-12:
 		return False, "blocked: cannot sell more than position"
 
+	if action == "buy" and current_position <= 1e-12 and max_concurrent_positions > 0:
+		if open_positions_count >= max_concurrent_positions:
+			return False, "blocked: max concurrent positions reached"
+
 	proposed_position = current_position + size if action == "buy" else current_position - size
 	if abs(proposed_position) > max_position_size:
 		return False, "blocked: max position size exceeded"
+
+	if risk_per_trade > 0 and equity > 0 and price > 0:
+		risk_notional = equity * risk_per_trade
+		if size * price > risk_notional + 1e-12:
+			return False, "blocked: risk per trade exceeded"
+
+	if max_exposure > 0 and equity > 0 and price > 0:
+		proposed_exposure = abs(proposed_position) * price
+		if proposed_exposure > (equity * max_exposure) + 1e-12:
+			return False, "blocked: max exposure exceeded"
 
 	return True, "allowed"
 

@@ -9,6 +9,8 @@ Output:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from feature_engine import FeatureSnapshot
 from strategies import StrategySignal
 
@@ -46,3 +48,11 @@ def generate_signal(features: FeatureSnapshot, momentum_threshold: float = 0.002
         confidence=round(1.0 - strength, 4),
         reason="momentum below threshold",
     )
+
+
+@dataclass(frozen=True)
+class MomentumStrategy:
+    name: str = "momentum"
+
+    def generate_signal(self, features: FeatureSnapshot, **params: float) -> StrategySignal:
+        return generate_signal(features, momentum_threshold=float(params.get("momentum_threshold", 0.002)))

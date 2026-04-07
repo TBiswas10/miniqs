@@ -47,6 +47,7 @@ class ExecutionEngine:
 
 		execution_report: Dict[str, Any] | None = None
 		trade_to_apply = dict(trade)
+		action = str(trade.get("action", "")).lower()
 
 		if self.realistic_simulation:
 			execution_report = self.simulator.simulate(trade)

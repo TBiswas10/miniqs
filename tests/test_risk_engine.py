@@ -81,6 +81,41 @@ class TestRiskEngine(unittest.TestCase):
         engine.record_execution(strategy=strategy, realized_pnl_trade=-60.0, equity=99940.0)
         self.assertTrue(engine.strategy_kill_switch.get(strategy, False))
 
+    def test_combined_gate_blocks_drawdown_limit(self) -> None:
+        engine = RiskEngine(
+            initial_equity=100000.0,
+            config=RiskConfig(portfolio_drawdown_limit=0.2),
+        )
+        now = datetime.now(timezone.utc)
+        trade = {
+            "action": "buy",
+            "size": 1.0,
+            "confidence": 0.9,
+            "price": 100.0,
+            "timestamp": now.isoformat(),
+            "strategy": "momentum",
+        }
+        state = {
+            "current_position": 0.0,
+            "open_positions_count": 0,
+            "max_concurrent_positions": 3,
+            "last_trade_timestamp": now - timedelta(seconds=120),
+            "session_loss": 0.0,
+            "max_position_size": 5.0,
+            "cooldown_seconds": 1,
+            "daily_loss_limit": 1000.0,
+            "equity": 100000.0,
+            "total_pnl": 0.0,
+            "portfolio_drawdown": 0.25,
+            "portfolio_drawdown_limit": 0.2,
+            "market_volatility": 0.01,
+            "strategy_weight": 1.0,
+        }
+
+        allow, reason, _, _ = engine.assess_trade(trade, state)
+        self.assertFalse(allow)
+        self.assertIn("drawdown", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

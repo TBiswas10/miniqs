@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import random
 from typing import Any, Dict, List
 
@@ -13,6 +13,8 @@ class ExecutionSimulationConfig:
     spread_bps: float = 1.5
     slippage_bps: float = 3.0
     impact_bps_per_unit: float = 0.25
+    min_latency_ms: int = 50
+    max_latency_ms: int = 200
     partial_fill_probability: float = 0.35
     cancel_remainder_probability: float = 0.2
     reject_probability: float = 0.0
@@ -41,15 +43,23 @@ class ExecutionSimulator:
 
         path: List[Dict[str, Any]] = []
         fills: List[Dict[str, Any]] = []
+        min_latency = max(1, int(self.config.min_latency_ms))
+        max_latency = max(min_latency, int(self.config.max_latency_ms))
+        total_latency_ms = int(self._rng.randint(min_latency, max_latency))
+        base_time = datetime.now(timezone.utc)
+        state_count = 1
 
         def push_state(state: str, detail: str = "") -> None:
+            nonlocal state_count
+            ms_offset = int((total_latency_ms * state_count) / 6)
             path.append(
                 {
                     "state": state,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": (base_time + timedelta(milliseconds=ms_offset)).isoformat(),
                     "detail": detail,
                 }
             )
+            state_count += 1
 
         push_state(OrderState.CREATED)
 
@@ -60,6 +70,7 @@ class ExecutionSimulator:
                 "filled_size": 0.0,
                 "remaining_size": requested_size,
                 "avg_fill_price": reference_price,
+                "latency_ms": total_latency_ms,
                 "path": path,
                 "fills": fills,
             }
@@ -74,6 +85,7 @@ class ExecutionSimulator:
                 "filled_size": 0.0,
                 "remaining_size": requested_size,
                 "avg_fill_price": reference_price,
+                "latency_ms": total_latency_ms,
                 "path": path,
                 "fills": fills,
             }
@@ -116,6 +128,7 @@ class ExecutionSimulator:
             "filled_size": round(filled_size, 8),
             "remaining_size": round(max(0.0, requested_size - filled_size), 8),
             "avg_fill_price": round(avg_fill_price, 8),
+            "latency_ms": total_latency_ms,
             "path": path,
             "fills": fills,
         }

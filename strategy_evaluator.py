@@ -10,8 +10,9 @@ Output:
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+from event_bus import EventBus, SignalEvent
 from strategies import StrategySignal
 
 
@@ -41,3 +42,18 @@ def evaluate_signals(
 		return None
 
 	return best
+
+
+def emit_signal_event(
+	*,
+	bus: EventBus,
+	chosen: StrategySignal,
+	trade: Dict[str, Any],
+	risk_state: Dict[str, Any],
+) -> None:
+	"""Emit a standardized signal event onto the event bus.
+
+	This keeps signal publication responsibility inside the evaluator layer,
+	while downstream handlers own risk checks and execution.
+	"""
+	bus.publish(SignalEvent(strategy=chosen.strategy, trade=trade, risk_state=risk_state))

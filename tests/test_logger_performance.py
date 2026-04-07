@@ -41,6 +41,7 @@ class TestLoggerPerformance(unittest.TestCase):
                 trades_count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
                 snapshots_count = conn.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
                 metrics_count = conn.execute("SELECT COUNT(*) FROM performance_metrics").fetchone()[0]
+                events_count = conn.execute("SELECT COUNT(*) FROM event_log").fetchone()[0]
             finally:
                 conn.close()
 
@@ -48,6 +49,7 @@ class TestLoggerPerformance(unittest.TestCase):
             self.assertEqual(trades_count, 1)
             self.assertEqual(snapshots_count, 1)
             self.assertEqual(metrics_count, 1)
+            self.assertGreaterEqual(events_count, 4)
             self.assertIn("sharpe_ratio", metrics)
 
 

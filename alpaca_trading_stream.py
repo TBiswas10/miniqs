@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from typing import Any, Callable, Dict
 
 _log = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ async def run_trading_stream_listener(
     import websockets  # type: ignore
 
     backoff = 1.0
+    reconnect_attempts = 0
     while not stop_event.is_set():
         try:
             async with websockets.connect(
@@ -53,6 +55,7 @@ async def run_trading_stream_listener(
                 close_timeout=10,
                 max_size=2**23,
             ) as ws:
+                reconnect_attempts = 0
                 on_connection_event("connected", "")
                 await ws.send(
                     json.dumps({"action": "auth", "key": api_key_id, "secret": api_secret_key})
@@ -69,14 +72,17 @@ async def run_trading_stream_listener(
                             st = (data.get("data") or {}).get("status")
                             if st == "authorized":
                                 authorized = True
+                                on_connection_event("authenticated", "authorized")
                                 break
                             if st == "unauthorized":
                                 on_connection_event("auth_failed", str(data))
                                 raise RuntimeError("Alpaca trading WS unauthorized")
                 if not authorized:
+                    on_connection_event("auth_timeout", "authorization timeout")
                     raise RuntimeError("Alpaca trading WS: authorization timeout")
 
                 await ws.send(json.dumps({"action": "listen", "data": {"streams": ["trade_updates"]}}))
+                on_connection_event("subscribed", "trade_updates")
                 backoff = 1.0
 
                 while not stop_event.is_set():
@@ -100,11 +106,21 @@ async def run_trading_stream_listener(
                                 pl = item.get("data")
                                 if isinstance(pl, dict):
                                     on_message("trade_updates", pl)
+            on_connection_event("disconnected", "socket_closed")
 
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError as exc:
+            reconnect_attempts += 1
+            _log.warning("Trading WS timeout: %s", exc)
+            on_connection_event("reconnecting", f"attempt={reconnect_attempts} timeout={exc}")
+            jitter = random.uniform(0.0, 0.5)
+            await asyncio.sleep(backoff + jitter)
+            backoff = min(60.0, backoff * 2.0)
         except Exception as exc:  # noqa: BLE001
+            reconnect_attempts += 1
             _log.exception("Trading WS error: %s", exc)
-            on_connection_event("reconnecting", str(exc))
-            await asyncio.sleep(backoff)
+            on_connection_event("reconnecting", f"attempt={reconnect_attempts} error={exc}")
+            jitter = random.uniform(0.0, 0.5)
+            await asyncio.sleep(backoff + jitter)
             backoff = min(60.0, backoff * 2.0)

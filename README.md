@@ -10,12 +10,15 @@ It is built for iterative strategy development: design, validate, observe, and t
 
 ## What You Get
 
-- Feature-driven signal pipeline: features -> strategies -> evaluator -> risk -> execution -> portfolio
+- Event-driven signal pipeline via central bus: market -> signal -> risk -> order -> fill
 - Baseline strategies: mean reversion, momentum, and volatility breakout
+- Common strategy interface + hot-swappable strategy registry
 - Historical backtesting and conservative parameter optimization
 - Stress testing under volatility, spikes, downtrends, and liquidity shocks
 - DataFeed supports both simulated ticks and live Binance mid-price streaming
 - Live Alpaca paper runner with detailed brain-trace and execution logs
+- Centralized configuration from JSON/YAML with optional environment overrides
+- Structured JSON event logging for replay/reconstruction of live and backtest runs
 - Real-time terminal with:
   - decision stream and reasoning
   - risk gate visibility and why-not-trade diagnostics
@@ -30,10 +33,14 @@ It is built for iterative strategy development: design, validate, observe, and t
 - `stress_testing.py`: stress scenario generation and stress runner
 - `execute_validation_pipeline.py`: end-to-end validation reporting pipeline
 - `alpaca_paper_runner.py`: live paper trading runner (Alpaca)
-- `alpaca_config.py`: Alpaca config and environment parsing
+- `alpaca_config.py`: centralized Alpaca config loader (JSON/YAML + env override)
+- `config/alpaca_config.json`: default centralized runtime config
 - `quant_control_state.py`: persisted shared control state
 - `decision_terminal/backend/main.py`: FastAPI backend + websocket stream + control APIs
 - `decision_terminal/frontend/`: Next.js frontend terminal
+- `event_bus.py`: shared in-memory event types, queue, and dispatcher
+- `risk_manager.py`: combined per-trade + portfolio-level risk gatekeeper
+- `logger.py`: SQLite + JSONL structured event logger
 - `tests/`: unit and integration tests
 - `validation_reports/`: generated validation outputs
 
@@ -68,6 +75,25 @@ Copy-Item .env.example .env
 
 Then fill in your Alpaca paper credentials in `.env`.
 
+### 3.1) Configure project behavior from centralized config
+
+Edit:
+
+- `config/alpaca_config.json`
+
+You can tune market-data, strategy, risk, and execution settings here without code edits.
+
+Optional override:
+
+```powershell
+$env:ALPACA_CONFIG_FILE="config/alpaca_config.json"
+```
+
+Supported file types for `ALPACA_CONFIG_FILE`:
+
+- `.json`
+- `.yaml` or `.yml` (requires `PyYAML`)
+
 ### 4) Install frontend dependencies
 
 ```powershell
@@ -88,7 +114,7 @@ python -m uvicorn decision_terminal.backend.main:app --host 127.0.0.1 --port 800
 
 ### Terminal B: Alpaca paper runner
 
-Set credentials in that same shell:
+Set credentials in that same shell (or place them in config file):
 
 ```powershell
 $env:ALPACA_API_KEY_ID="your_paper_key"
@@ -102,6 +128,7 @@ Optional:
 ```powershell
 $env:ALPACA_SYMBOLS="SPY"
 $env:ALPACA_MAX_TICKS="500"
+$env:ALPACA_CONFIG_FILE="config/alpaca_config.json"
 ```
 
 Run:
@@ -123,6 +150,7 @@ Open the exact URL printed by Next.js (commonly `http://localhost:3000`, or `300
 Health endpoint:
 
 - `http://127.0.0.1:8000/api/health`
+- `http://127.0.0.1:8000/health`
 
 ## Core Workflows
 
@@ -147,6 +175,35 @@ Event-driven flow is implemented as decoupled async workers connected by queues:
 
 This prevents a slow stage from blocking the full trading loop.
 
+### Live and backtest architecture parity
+
+`main.py`, `alpaca_paper_runner.py`, and `backtest.py` all follow event-driven dispatch flow:
+
+- MarketEvent -> SignalEvent -> Risk gate -> OrderEvent -> FillEvent
+
+This keeps risk/execution semantics consistent across simulation, backtest, and live paper mode.
+
+### Strategy interface and hot-swapping
+
+All strategies follow a common interface and are run via a strategy registry.
+
+- Built-ins: mean reversion, momentum, volatility breakout
+- Strategies are weighted by iteration/feedback engine outputs
+- You can hot-swap a strategy implementation in the registry without changing pipeline logic
+
+### Risk controls now combined in one gate
+
+The risk manager combines per-trade and portfolio-level checks before execution:
+
+- confidence threshold
+- risk per trade
+- max exposure
+- max concurrent positions
+- cooldown
+- max position size
+- daily loss limit / kill switch
+- drawdown limits
+
 ### Realistic execution simulation
 
 Backtests and simulated paper sessions now use an order-state machine and realistic fill model.
@@ -164,6 +221,11 @@ Execution realism includes:
 - size-based market impact
 - partial fills and remainder cancellation
 - transaction fees via portfolio accounting
+
+Backtest fills additionally include realistic simulated latency and slippage:
+
+- latency: 50-200ms per order
+- slippage/impact applied to fill price
 
 ### Backtest quick example
 
@@ -210,6 +272,12 @@ Behavior that updates in-process:
 - Strategy enable/disable
 - Confidence threshold and risk limits
 
+Risk limits include:
+
+- `confidence_threshold`
+- `max_position_size`
+- `max_daily_loss`
+
 Shared state file:
 
 - `logs/terminal_control_state.json`
@@ -225,8 +293,11 @@ This keeps responsibilities clean:
 Read endpoints:
 
 - `GET /api/health`
+- `GET /health`
 - `GET /api/decision/snapshot`
 - `WS /ws/decisions`
+
+`/ws/decisions` is event-driven (pushes on event bus updates), not fixed-interval polling.
 
 Control endpoints:
 
@@ -277,3 +348,12 @@ Check:
 - `SYSTEM_ARCHITECTURE.md`
 - `VALIDATION_REPORT.md`
 - `COMPLETION_SUMMARY.md`
+
+## Logging and Replay
+
+The logger writes two synchronized formats:
+
+- SQLite tables (`signals`, `trades`, `risk_blocks`, snapshots, etc.)
+- Structured JSON event stream (`*.events.jsonl`) with run id + sequence
+
+These logs are sufficient to reconstruct timeline behavior for backtests and live paper sessions.

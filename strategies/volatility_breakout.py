@@ -9,6 +9,8 @@ Output:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from feature_engine import FeatureSnapshot
 from strategies import StrategySignal
 
@@ -48,3 +50,11 @@ def generate_signal(features: FeatureSnapshot, breakout_factor: float = 1.2) -> 
         confidence=round(1.0 - strength, 4),
         reason="momentum within volatility band",
     )
+
+
+@dataclass(frozen=True)
+class VolatilityBreakoutStrategy:
+    name: str = "volatility_breakout"
+
+    def generate_signal(self, features: FeatureSnapshot, **params: float) -> StrategySignal:
+        return generate_signal(features, breakout_factor=float(params.get("breakout_factor", 1.2)))

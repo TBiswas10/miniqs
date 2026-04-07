@@ -1,0 +1,16 @@
+{
+  "dataset_name": "wf_train",
+  "version_id": "20260407_222049_b3df1182",
+  "created_at": "2026-04-07T22:20:49.957488+00:00",
+  "metadata": {
+    "mode": "backtest",
+    "num_prices": 100,
+    "config": {
+      "confidence_threshold": 0.58,
+      "mr_threshold": 0.00285,
+      "mom_threshold": 0.0019,
+      "persist_research": true,
+      "dataset_name": "wf_train"
+    }
+  }
+}

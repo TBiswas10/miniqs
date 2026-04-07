@@ -1,0 +1,10 @@
+{
+  "dataset_name": "backtest",
+  "version_id": "20260407_220253_e1bba55c",
+  "created_at": "2026-04-07T22:02:53.613796+00:00",
+  "metadata": {
+    "mode": "backtest",
+    "num_prices": 250,
+    "config": {}
+  }
+}

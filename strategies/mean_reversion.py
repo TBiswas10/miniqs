@@ -9,6 +9,8 @@ Output:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from feature_engine import FeatureSnapshot
 from strategies import StrategySignal
 
@@ -55,3 +57,11 @@ def generate_signal(features: FeatureSnapshot, entry_threshold: float = 0.003) -
         confidence=round(1.0 - strength, 4),
         reason="deviation below threshold",
     )
+
+
+@dataclass(frozen=True)
+class MeanReversionStrategy:
+    name: str = "mean_reversion"
+
+    def generate_signal(self, features: FeatureSnapshot, **params: float) -> StrategySignal:
+        return generate_signal(features, entry_threshold=float(params.get("entry_threshold", 0.003)))

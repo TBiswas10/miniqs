@@ -13,9 +13,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 from data_feed import DataFeed, Tick
+from event_bus import (
+    EventBus,
+    EventDispatcher,
+    ExperimentLogEvent,
+    FillEvent,
+    IterationEvent,
+    MarketEvent,
+    OrderEvent,
+    SignalEvent,
+)
 from execution import ExecutionEngine
 from feature_engine import FeatureEngine
 from iteration_engine import AutoTuner, ExperimentLogger, RegimeDetector
@@ -23,10 +33,8 @@ from logger import QuantLogger
 from performance import PerformanceTracker
 from portfolio import Portfolio
 from risk_manager import RiskConfig, RiskEngine
-from strategies.mean_reversion import generate_signal as mean_reversion_signal
-from strategies.momentum import generate_signal as momentum_signal
-from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
-from strategy_evaluator import evaluate_signals
+from strategies import StrategyRegistry, default_strategy_registry, generate_weighted_signals
+from strategy_evaluator import emit_signal_event, evaluate_signals
 
 
 @dataclass
@@ -181,6 +189,214 @@ def run_feedback_simulation(num_ticks: int = 100) -> Dict[str, float]:
     return dict(loop.strategy_weights)
 
 
+@dataclass
+class PipelineRuntime:
+    portfolio: Portfolio
+    execution: ExecutionEngine
+    logger: QuantLogger
+    perf: PerformanceTracker
+    feedback: FeedbackLoop
+    risk_engine: RiskEngine
+    features: FeatureEngine
+    regime_detector: RegimeDetector
+    auto_tuner: AutoTuner
+    iteration_logger: ExperimentLogger
+    strategy_registry: StrategyRegistry
+    confidence_threshold: float
+    run_id: str
+    recent_prices: List[float] = field(default_factory=list)
+    iteration_index: int = 0
+    last_iteration_equity: float = 100000.0
+    last_trade_timestamp: Optional[str] = None
+    executed_trades: int = 0
+
+
+def _on_market_event(event: MarketEvent, bus: EventBus, runtime: PipelineRuntime) -> None:
+    tick = event.tick
+    runtime.recent_prices.append(float(tick.price))
+    runtime.recent_prices = runtime.recent_prices[-200:]
+
+    snap = runtime.features.update(tick)
+    runtime.portfolio.update_pnl(tick.price)
+    state = runtime.portfolio.get_portfolio_state()
+    runtime.perf.record_equity(float(state["equity"]))
+    runtime.logger.log_portfolio_snapshot(state)
+
+    if snap is None:
+        return
+
+    weights = runtime.feedback.strategy_weights
+    signals = generate_weighted_signals(
+        features=snap,
+        registry=runtime.strategy_registry,
+        weights=weights,
+        enabled={
+            "mean_reversion": runtime.feedback.is_enabled("mean_reversion"),
+            "momentum": runtime.feedback.is_enabled("momentum"),
+            "volatility_breakout": runtime.feedback.is_enabled("volatility_breakout"),
+        },
+        params={
+            "mean_reversion": {"entry_threshold": 0.003},
+            "momentum": {"momentum_threshold": 0.002},
+            "volatility_breakout": {"breakout_factor": 1.2},
+        },
+    )
+    mr = signals["mean_reversion"]
+    mo = signals["momentum"]
+    vb = signals["volatility_breakout"]
+
+    runtime.logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
+    runtime.logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
+    runtime.logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
+
+    chosen = evaluate_signals([mr, mo, vb], confidence_threshold=runtime.confidence_threshold)
+    if chosen is None:
+        return
+
+    trade = {
+        "action": chosen.action,
+        "size": 1.0,
+        "confidence": chosen.confidence,
+        "price": tick.price,
+        "timestamp": tick.timestamp.isoformat(),
+        "strategy": chosen.strategy,
+        "symbol": tick.symbol,
+    }
+    risk_state = {
+        "current_position": float(state["position_size"]),
+        "last_trade_timestamp": runtime.last_trade_timestamp,
+        "session_loss": max(0.0, -float(state["total_pnl"])),
+        "max_position_size": float(runtime.risk_engine.config.max_position_size),
+        "cooldown_seconds": int(runtime.risk_engine.config.cooldown_seconds),
+        "max_loss_per_session": float(runtime.risk_engine.config.max_loss_per_session),
+        "equity": float(state["equity"]),
+        "total_pnl": float(state["total_pnl"]),
+        "market_volatility": float(snap.rolling_volatility),
+        "strategy_weight": float(weights.get(chosen.strategy, 0.0)),
+    }
+    emit_signal_event(bus=bus, chosen=chosen, trade=trade, risk_state=risk_state)
+
+
+def _on_signal_event(event: SignalEvent, bus: EventBus, runtime: PipelineRuntime) -> None:
+    allow, reason, adjusted_trade, _ = runtime.risk_engine.assess_trade(event.trade, event.risk_state)
+    if not allow:
+        runtime.logger.log_risk_block(reason, str(event.trade))
+        if "strategy_kill_switch" in reason:
+            runtime.feedback.strategy_enabled[event.strategy] = False
+            runtime.feedback.strategy_weights[event.strategy] = 0.0
+        return
+    bus.publish(OrderEvent(strategy=event.strategy, trade=adjusted_trade, reason=reason))
+
+
+def _on_order_event(event: OrderEvent, bus: EventBus, runtime: PipelineRuntime) -> None:
+    result = runtime.execution.execute_trade(event.trade)
+    bus.publish(FillEvent(strategy=event.strategy, trade=event.trade, result=result))
+
+
+def _on_fill_event(event: FillEvent, bus: EventBus, runtime: PipelineRuntime) -> None:
+    runtime.last_trade_timestamp = str(event.trade["timestamp"])
+    runtime.executed_trades += 1
+    runtime.logger.log_trade(cast(Dict[str, float], event.result), strategy=event.strategy)
+    runtime.perf.record_trade(float(event.result["realized_pnl_trade"]))
+    runtime.perf.record_strategy_trade(event.strategy, float(event.result["realized_pnl_trade"]))
+
+    post_state = runtime.portfolio.get_portfolio_state()
+    runtime.risk_engine.record_execution(
+        strategy=event.strategy,
+        realized_pnl_trade=float(event.result["realized_pnl_trade"]),
+        equity=float(post_state["equity"]),
+    )
+    if runtime.risk_engine.strategy_kill_switch.get(event.strategy, False):
+        runtime.feedback.strategy_enabled[event.strategy] = False
+        runtime.feedback.strategy_weights[event.strategy] = 0.0
+
+    if runtime.executed_trades % 10 == 0:
+        strategy_metrics = runtime.perf.strategy_metrics_for_feedback()
+        if strategy_metrics:
+            runtime.feedback.update(strategy_metrics, logger=runtime.logger)
+
+    if runtime.executed_trades > 0 and runtime.executed_trades % 20 == 0 and runtime.recent_prices:
+        market = runtime.regime_detector.detect(runtime.recent_prices)
+        iter_state = runtime.portfolio.get_portfolio_state()
+        strategy_metrics = runtime.perf.strategy_metrics_for_feedback()
+        outcomes = {
+            "equity_delta": float(iter_state["equity"]) - runtime.last_iteration_equity,
+            "drawdown": float(runtime.perf.compute_metrics(float(iter_state["total_pnl"]))["max_drawdown"]),
+            "total_pnl": float(iter_state["total_pnl"]),
+        }
+        bus.publish(
+            IterationEvent(
+                run_id=runtime.run_id,
+                iteration=runtime.iteration_index,
+                current_weights=dict(runtime.feedback.strategy_weights),
+                risk_params={
+                    "base_trade_size": float(runtime.risk_engine.config.base_trade_size),
+                    "max_position_size": float(runtime.risk_engine.config.max_position_size),
+                    "cooldown_seconds": float(runtime.risk_engine.config.cooldown_seconds),
+                },
+                market_conditions={
+                    "regime": market.regime,
+                    "realized_volatility": float(market.realized_volatility),
+                    "trend_slope": float(market.trend_slope),
+                    "momentum": float(market.momentum),
+                },
+                outcomes=outcomes,
+                strategy_metrics={k: dict(v) for k, v in strategy_metrics.items()},
+                iteration_equity=float(iter_state["equity"]),
+            )
+        )
+
+
+def _on_iteration_event(event: IterationEvent, bus: EventBus, runtime: PipelineRuntime) -> None:
+    market = runtime.regime_detector.detect(runtime.recent_prices)
+    rec = runtime.auto_tuner.recommend(
+        current_weights=event.current_weights,
+        risk_params=event.risk_params,
+        market_conditions=market,
+        outcomes=event.outcomes,
+        strategy_metrics=event.strategy_metrics,
+    )
+
+    runtime.feedback.strategy_weights = dict(rec["strategy_weights"])
+    for strategy, weight in runtime.feedback.strategy_weights.items():
+        runtime.feedback.strategy_enabled[strategy] = bool(weight > 0.0)
+
+    risk_params = dict(rec["risk_params"])
+    runtime.risk_engine.config.base_trade_size = float(risk_params["base_trade_size"])
+    runtime.risk_engine.config.max_position_size = float(risk_params["max_position_size"])
+    runtime.risk_engine.config.cooldown_seconds = int(risk_params["cooldown_seconds"])
+
+    bus.publish(
+        ExperimentLogEvent(
+            run_id=event.run_id,
+            iteration=event.iteration,
+            parameter_set={
+                "weights": dict(runtime.feedback.strategy_weights),
+                "base_trade_size": float(runtime.risk_engine.config.base_trade_size),
+                "max_position_size": float(runtime.risk_engine.config.max_position_size),
+                "cooldown_seconds": int(runtime.risk_engine.config.cooldown_seconds),
+            },
+            market_conditions=dict(rec["market_conditions"]),
+            outcomes=dict(event.outcomes),
+            recommendations=dict(rec),
+            iteration_equity=float(event.iteration_equity),
+        )
+    )
+
+
+def _on_experiment_log_event(event: ExperimentLogEvent, bus: EventBus, runtime: PipelineRuntime) -> None:
+    runtime.iteration_logger.log_experiment(
+        run_id=event.run_id,
+        iteration=event.iteration,
+        parameter_set=event.parameter_set,
+        market_conditions=event.market_conditions,
+        outcomes=event.outcomes,
+        recommendations=event.recommendations,
+    )
+    runtime.iteration_index += 1
+    runtime.last_iteration_equity = float(event.iteration_equity)
+
+
 def run_paper_trading_session(num_ticks: int = 200, seed: int = 42) -> Dict[str, float]:
     """Run a full paper-mode integration pipeline on simulated ticks.
 
@@ -222,186 +438,65 @@ def run_paper_trading_session(num_ticks: int = 200, seed: int = 42) -> Dict[str,
                 vol_target=0.01,
             ),
         )
+        features = FeatureEngine(ma_window=20, long_ma_window=50, vol_window=20, momentum_window=10, debug=False)
         iteration_logger = ExperimentLogger(db_path=str(db_dir / "iteration_history.db"))
-        regime_detector = RegimeDetector(window=40)
-        auto_tuner = AutoTuner()
-        run_id = datetime.now(timezone.utc).strftime("paper_%Y%m%d_%H%M%S")
-        iteration_index = 0
-        last_iteration_equity = 100000.0
-        recent_prices: List[float] = []
+        runtime = PipelineRuntime(
+            portfolio=portfolio,
+            execution=execution,
+            logger=logger,
+            perf=perf,
+            feedback=feedback,
+            risk_engine=risk_engine,
+            features=features,
+            regime_detector=RegimeDetector(window=40),
+            auto_tuner=AutoTuner(),
+            iteration_logger=iteration_logger,
+            strategy_registry=default_strategy_registry(),
+            confidence_threshold=0.35,
+            run_id=datetime.now(timezone.utc).strftime("paper_%Y%m%d_%H%M%S"),
+            last_iteration_equity=100000.0,
+        )
+
+        bus = EventBus()
+        dispatcher = EventDispatcher()
+        dispatcher.register(MarketEvent, _on_market_event)
+        dispatcher.register(SignalEvent, _on_signal_event)
+        dispatcher.register(OrderEvent, _on_order_event)
+        dispatcher.register(FillEvent, _on_fill_event)
+        dispatcher.register(IterationEvent, _on_iteration_event)
+        dispatcher.register(ExperimentLogEvent, _on_experiment_log_event)
 
         feed = DataFeed(symbol="SIM", mode="simulated", seed=seed, start_price=100.0)
-        features = FeatureEngine(ma_window=20, long_ma_window=50, vol_window=20, momentum_window=10, debug=False)
-
-        last_trade_timestamp = None
-        executed_trades = 0
 
         for payload in feed.start_feed(tick_count=num_ticks):
             ts = datetime.fromisoformat(str(payload["timestamp"]))
             tick = Tick(symbol="SIM", price=float(payload["mid_price"]), timestamp=ts, volume=1.0)
-            recent_prices.append(tick.price)
-            recent_prices = recent_prices[-200:]
+            bus.publish(MarketEvent(tick=tick))
 
-            snap = features.update(tick)
-            portfolio.update_pnl(tick.price)
-            state = portfolio.get_portfolio_state()
-            perf.record_equity(float(state["equity"]))
-            logger.log_portfolio_snapshot(state)
+            while len(bus) > 0:
+                next_event = bus.consume()
+                if next_event is None:
+                    break
+                dispatcher.dispatch(next_event, bus, runtime)
 
-            if snap is None:
-                continue
-
-            weights = feedback.strategy_weights
-            mr = mean_reversion_signal(snap, entry_threshold=0.003)
-            mo = momentum_signal(snap, momentum_threshold=0.002)
-            vb = volatility_breakout_signal(snap, breakout_factor=1.2)
-
-            mr = mr.__class__(
-                strategy=mr.strategy,
-                action=mr.action,
-                confidence=min(1.0, mr.confidence * weights.get("mean_reversion", 0.5)),
-                reason=mr.reason,
-            )
-            mo = mo.__class__(
-                strategy=mo.strategy,
-                action=mo.action,
-                confidence=min(1.0, mo.confidence * weights.get("momentum", 0.5)),
-                reason=mo.reason,
-            )
-            vb = vb.__class__(
-                strategy=vb.strategy,
-                action=vb.action,
-                confidence=min(1.0, vb.confidence * weights.get("volatility_breakout", 0.2)),
-                reason=vb.reason,
-            )
-
-            if not feedback.is_enabled("mean_reversion"):
-                mr = mr.__class__(strategy=mr.strategy, action="hold", confidence=0.0, reason="auto_disabled")
-            if not feedback.is_enabled("momentum"):
-                mo = mo.__class__(strategy=mo.strategy, action="hold", confidence=0.0, reason="auto_disabled")
-            if not feedback.is_enabled("volatility_breakout"):
-                vb = vb.__class__(strategy=vb.strategy, action="hold", confidence=0.0, reason="auto_disabled")
-
-            logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
-            logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
-            logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
-
-            chosen = evaluate_signals([mr, mo, vb], confidence_threshold=0.35)
-            if chosen is None:
-                continue
-
-            trade = {
-                "action": chosen.action,
-                "size": 1.0,
-                "confidence": chosen.confidence,
-                "price": tick.price,
-                "timestamp": tick.timestamp.isoformat(),
-                "strategy": chosen.strategy,
-            }
-            risk_state = {
-                "current_position": float(state["position_size"]),
-                "last_trade_timestamp": last_trade_timestamp,
-                "session_loss": max(0.0, -float(state["total_pnl"])),
-                "max_position_size": 5.0,
-                "cooldown_seconds": 1,
-                "max_loss_per_session": 500.0,
-                "equity": float(state["equity"]),
-                "total_pnl": float(state["total_pnl"]),
-                "market_volatility": float(snap.rolling_volatility),
-                "strategy_weight": float(weights.get(chosen.strategy, 0.0)),
-            }
-            allow, reason, adjusted_trade, _ = risk_engine.assess_trade(trade, risk_state)
-            if not allow:
-                if "strategy_kill_switch" in reason:
-                    feedback.strategy_enabled[chosen.strategy] = False
-                    feedback.strategy_weights[chosen.strategy] = 0.0
-                continue
-
-            result = execution.execute_trade(adjusted_trade)
-            last_trade_timestamp = adjusted_trade["timestamp"]
-            executed_trades += 1
-            logger.log_trade(result, strategy=chosen.strategy)
-            perf.record_trade(float(result["realized_pnl_trade"]))
-            perf.record_strategy_trade(chosen.strategy, float(result["realized_pnl_trade"]))
-
-            post_state = portfolio.get_portfolio_state()
-            risk_engine.record_execution(
-                strategy=chosen.strategy,
-                realized_pnl_trade=float(result["realized_pnl_trade"]),
-                equity=float(post_state["equity"]),
-            )
-            if risk_engine.strategy_kill_switch.get(chosen.strategy, False):
-                feedback.strategy_enabled[chosen.strategy] = False
-                feedback.strategy_weights[chosen.strategy] = 0.0
-
-            if executed_trades % 10 == 0:
-                strategy_metrics = perf.strategy_metrics_for_feedback()
-                if strategy_metrics:
-                    feedback.update(strategy_metrics, logger=logger)
-
-            if executed_trades > 0 and executed_trades % 20 == 0 and recent_prices:
-                market = regime_detector.detect(recent_prices)
-                iter_state = portfolio.get_portfolio_state()
-                strategy_metrics = perf.strategy_metrics_for_feedback()
-                outcomes = {
-                    "equity_delta": float(iter_state["equity"]) - last_iteration_equity,
-                    "drawdown": float(perf.compute_metrics(float(iter_state["total_pnl"]))["max_drawdown"]),
-                    "total_pnl": float(iter_state["total_pnl"]),
-                }
-                rec = auto_tuner.recommend(
-                    current_weights=feedback.strategy_weights,
-                    risk_params={
-                        "base_trade_size": risk_engine.config.base_trade_size,
-                        "max_position_size": risk_engine.config.max_position_size,
-                        "cooldown_seconds": risk_engine.config.cooldown_seconds,
-                    },
-                    market_conditions=market,
-                    outcomes=outcomes,
-                    strategy_metrics=strategy_metrics,
-                )
-                feedback.strategy_weights = dict(rec["strategy_weights"])
-                for strategy, weight in feedback.strategy_weights.items():
-                    feedback.strategy_enabled[strategy] = bool(weight > 0.0)
-
-                risk_params = dict(rec["risk_params"])
-                risk_engine.config.base_trade_size = float(risk_params["base_trade_size"])
-                risk_engine.config.max_position_size = float(risk_params["max_position_size"])
-                risk_engine.config.cooldown_seconds = int(risk_params["cooldown_seconds"])
-
-                iteration_logger.log_experiment(
-                    run_id=run_id,
-                    iteration=iteration_index,
-                    parameter_set={
-                        "weights": feedback.strategy_weights,
-                        "base_trade_size": risk_engine.config.base_trade_size,
-                        "max_position_size": risk_engine.config.max_position_size,
-                        "cooldown_seconds": risk_engine.config.cooldown_seconds,
-                    },
-                    market_conditions=rec["market_conditions"],
-                    outcomes=outcomes,
-                    recommendations=rec,
-                )
-                iteration_index += 1
-                last_iteration_equity = float(iter_state["equity"])
-
-        final_state = portfolio.get_portfolio_state()
-        metrics = perf.compute_metrics(latest_total_pnl=float(final_state["total_pnl"]))
-        logger.log_performance_metrics(metrics)
+        final_state = runtime.portfolio.get_portfolio_state()
+        metrics = runtime.perf.compute_metrics(latest_total_pnl=float(final_state["total_pnl"]))
+        runtime.logger.log_performance_metrics(metrics)
         feed.stop_feed()
 
     summary = {
-        "executed_trades": float(executed_trades),
+        "executed_trades": float(runtime.executed_trades),
         "total_pnl": float(metrics["total_pnl"]),
         "win_rate": float(metrics["win_rate"]),
         "max_drawdown": float(metrics["max_drawdown"]),
         "sharpe_ratio": float(metrics["sharpe_ratio"]),
-        "mean_reversion_weight": float(feedback.strategy_weights["mean_reversion"]),
-        "momentum_weight": float(feedback.strategy_weights["momentum"]),
-        "volatility_breakout_weight": float(feedback.strategy_weights.get("volatility_breakout", 0.0)),
-        "iteration_updates": float(iteration_index),
-        "adaptive_base_trade_size": float(risk_engine.config.base_trade_size),
-        "adaptive_max_position_size": float(risk_engine.config.max_position_size),
-        "adaptive_cooldown_seconds": float(risk_engine.config.cooldown_seconds),
+        "mean_reversion_weight": float(runtime.feedback.strategy_weights["mean_reversion"]),
+        "momentum_weight": float(runtime.feedback.strategy_weights["momentum"]),
+        "volatility_breakout_weight": float(runtime.feedback.strategy_weights.get("volatility_breakout", 0.0)),
+        "iteration_updates": float(runtime.iteration_index),
+        "adaptive_base_trade_size": float(runtime.risk_engine.config.base_trade_size),
+        "adaptive_max_position_size": float(runtime.risk_engine.config.max_position_size),
+        "adaptive_cooldown_seconds": float(runtime.risk_engine.config.cooldown_seconds),
     }
     return summary
 

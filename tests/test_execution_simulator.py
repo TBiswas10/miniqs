@@ -21,6 +21,8 @@ class TestExecutionSimulator(unittest.TestCase):
         self.assertAlmostEqual(out["filled_size"], 2.0, places=6)
         self.assertAlmostEqual(out["remaining_size"], 0.0, places=6)
         self.assertGreater(out["avg_fill_price"], 100.0)
+        self.assertGreaterEqual(int(out["latency_ms"]), 50)
+        self.assertLessEqual(int(out["latency_ms"]), 200)
 
     def test_partial_cancel_state_path(self) -> None:
         sim = ExecutionSimulator(

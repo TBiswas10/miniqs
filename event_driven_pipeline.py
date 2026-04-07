@@ -21,9 +21,7 @@ from main import FeedbackLoop
 from performance import PerformanceTracker
 from portfolio import Portfolio
 from risk_manager import RiskConfig, RiskEngine
-from strategies.mean_reversion import generate_signal as mean_reversion_signal
-from strategies.momentum import generate_signal as momentum_signal
-from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
+from strategies import StrategyRegistry, default_strategy_registry, generate_weighted_signals
 from strategy_evaluator import evaluate_signals
 
 
@@ -79,6 +77,7 @@ class AsyncEventDrivenPipeline:
         self.executed_trades = 0
         self.last_trade_timestamp: str | None = None
         self.risk_engine: RiskEngine | None = None
+        self.strategy_registry: StrategyRegistry = default_strategy_registry()
 
     async def _ingestion_worker(self, feed: DataFeed) -> None:
         stream = feed.stream()
@@ -112,35 +111,24 @@ class AsyncEventDrivenPipeline:
 
             if snap is not None:
                 weights = feedback.strategy_weights
-                mr = mean_reversion_signal(snap, entry_threshold=0.003)
-                mo = momentum_signal(snap, momentum_threshold=0.002)
-                vb = volatility_breakout_signal(snap, breakout_factor=1.2)
-
-                mr = mr.__class__(
-                    strategy=mr.strategy,
-                    action=mr.action,
-                    confidence=min(1.0, mr.confidence * weights.get("mean_reversion", 0.5)),
-                    reason=mr.reason,
+                signals = generate_weighted_signals(
+                    features=snap,
+                    registry=self.strategy_registry,
+                    weights=weights,
+                    enabled={
+                        "mean_reversion": feedback.is_enabled("mean_reversion"),
+                        "momentum": feedback.is_enabled("momentum"),
+                        "volatility_breakout": feedback.is_enabled("volatility_breakout"),
+                    },
+                    params={
+                        "mean_reversion": {"entry_threshold": 0.003},
+                        "momentum": {"momentum_threshold": 0.002},
+                        "volatility_breakout": {"breakout_factor": 1.2},
+                    },
                 )
-                mo = mo.__class__(
-                    strategy=mo.strategy,
-                    action=mo.action,
-                    confidence=min(1.0, mo.confidence * weights.get("momentum", 0.5)),
-                    reason=mo.reason,
-                )
-                vb = vb.__class__(
-                    strategy=vb.strategy,
-                    action=vb.action,
-                    confidence=min(1.0, vb.confidence * weights.get("volatility_breakout", 0.2)),
-                    reason=vb.reason,
-                )
-
-                if not feedback.is_enabled("mean_reversion"):
-                    mr = mr.__class__(strategy=mr.strategy, action="hold", confidence=0.0, reason="auto_disabled")
-                if not feedback.is_enabled("momentum"):
-                    mo = mo.__class__(strategy=mo.strategy, action="hold", confidence=0.0, reason="auto_disabled")
-                if not feedback.is_enabled("volatility_breakout"):
-                    vb = vb.__class__(strategy=vb.strategy, action="hold", confidence=0.0, reason="auto_disabled")
+                mr = signals["mean_reversion"]
+                mo = signals["momentum"]
+                vb = signals["volatility_breakout"]
 
                 logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
                 logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
@@ -155,6 +143,7 @@ class AsyncEventDrivenPipeline:
                         "price": tick.price,
                         "timestamp": tick.timestamp.isoformat(),
                         "strategy": chosen.strategy,
+                        "symbol": tick.symbol,
                     }
                     risk_state = {
                         "current_position": float(state["position_size"]),

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 import sqlite3
 from typing import Any, Dict, Optional
 
@@ -10,8 +12,13 @@ from typing import Any, Dict, Optional
 class QuantLogger:
 	"""Persist runtime artifacts for review and debugging."""
 
-	def __init__(self, db_path: str = "logs.db") -> None:
+	def __init__(self, db_path: str = "logs.db", jsonl_path: Optional[str] = None, run_id: Optional[str] = None) -> None:
 		self.db_path = db_path
+		self.jsonl_path = jsonl_path or str(Path(db_path).with_suffix(".events.jsonl"))
+		self.run_id = run_id or datetime.now(timezone.utc).strftime("run_%Y%m%d_%H%M%S")
+		self._sequence = 0
+		Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+		Path(self.jsonl_path).parent.mkdir(parents=True, exist_ok=True)
 		self._init_db()
 
 	def _connect(self) -> sqlite3.Connection:
@@ -21,6 +28,18 @@ class QuantLogger:
 		conn = self._connect()
 		try:
 			cur = conn.cursor()
+			cur.execute(
+				"""
+				CREATE TABLE IF NOT EXISTS event_log (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					ts TEXT NOT NULL,
+					run_id TEXT NOT NULL,
+					seq INTEGER NOT NULL,
+					event_type TEXT NOT NULL,
+					payload_json TEXT NOT NULL
+				)
+				"""
+			)
 			cur.execute(
 				"""
 				CREATE TABLE IF NOT EXISTS signals (
@@ -118,8 +137,42 @@ class QuantLogger:
 		finally:
 			conn.close()
 
+	def _emit_structured_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+		ts = datetime.now(timezone.utc).isoformat()
+		self._sequence += 1
+		record = {
+			"ts": ts,
+			"run_id": self.run_id,
+			"seq": int(self._sequence),
+			"event_type": str(event_type),
+			"payload": payload,
+		}
+		encoded = json.dumps(record, default=str)
+
+		conn = self._connect()
+		try:
+			conn.execute(
+				"""
+				INSERT INTO event_log (ts, run_id, seq, event_type, payload_json)
+				VALUES (?, ?, ?, ?, ?)
+				""",
+				(ts, self.run_id, int(self._sequence), str(event_type), encoded),
+			)
+			conn.commit()
+		finally:
+			conn.close()
+
+		with open(self.jsonl_path, "a", encoding="utf-8") as handle:
+			handle.write(encoded + "\n")
+
 	def log_signal(self, strategy: str, action: str, confidence: float, reason: str) -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {
+			"strategy": str(strategy),
+			"action": str(action),
+			"confidence": float(confidence),
+			"reason": str(reason),
+		}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -129,9 +182,19 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("signal", payload)
 
 	def log_trade(self, trade_result: Dict[str, float], strategy: str) -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {
+			"strategy": str(strategy),
+			"action": str(trade_result.get("action", "")),
+			"size": float(trade_result.get("size", 0.0)),
+			"price": float(trade_result.get("price", 0.0)),
+			"fee": float(trade_result.get("fee", 0.0)),
+			"realized_pnl_trade": float(trade_result.get("realized_pnl_trade", 0.0)),
+			"raw": dict(trade_result),
+		}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -152,9 +215,11 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("trade", payload)
 
 	def log_portfolio_snapshot(self, state: Dict[str, float]) -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {k: float(v) for k, v in state.items()}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -173,9 +238,11 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("portfolio_snapshot", payload)
 
 	def log_performance_metrics(self, metrics: Dict[str, float]) -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {k: float(v) for k, v in metrics.items()}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -195,9 +262,11 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("performance_metrics", payload)
 
 	def log_ws_event(self, source: str, message: str) -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {"source": str(source), "message": str(message)[:8000]}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -207,9 +276,11 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("ws_event", payload)
 
 	def log_connection_event(self, component: str, status: str, detail: str = "") -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {"component": str(component), "status": str(status), "detail": str(detail)[:8000]}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -219,9 +290,11 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("connection_event", payload)
 
 	def log_risk_block(self, reason: str, detail: str = "") -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {"reason": str(reason), "detail": str(detail)[:8000]}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -231,9 +304,14 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("risk_block", payload)
 
 	def log_feedback(self, weights: Dict[str, float], reason: str) -> None:
 		ts = datetime.now(timezone.utc).isoformat()
+		payload = {
+			"weights": {k: float(v) for k, v in weights.items()},
+			"reason": str(reason)[:8000],
+		}
 		conn = self._connect()
 		try:
 			conn.execute(
@@ -251,6 +329,7 @@ class QuantLogger:
 			conn.commit()
 		finally:
 			conn.close()
+		self._emit_structured_event("feedback", payload)
 
 	def log_trade_update_event(self, event: str, payload: Optional[Dict[str, Any]] = None) -> None:
 		"""Alpaca trade_updates stream (order lifecycle)."""
