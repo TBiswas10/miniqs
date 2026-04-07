@@ -4,11 +4,13 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardTitle } from "@/components/ui/card";
 import { useDecisionStream } from "@/hooks";
 import { AdvancedPanels } from "@/components/terminal/advanced-panels";
+import { ExecutionOrderPanel } from "@/components/terminal/execution-order-panel";
+import { RiskDashboard } from "@/components/terminal/risk-dashboard";
 import { StrategyIntelligencePanel } from "@/components/terminal/strategy-intelligence-panel";
 import { SystemControlPanel } from "@/components/terminal/system-control-panel";
-import { CheckCircle2, CircleX, Filter, Info, Radar, ShieldAlert, Zap } from "lucide-react";
+import { CheckCircle2, CircleX, Filter, Info, Radar, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, Bar, BarChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 function toneFromAction(action: string) {
   if (action === "EXECUTE" || action === "EXECUTED") return "buy" as const;
@@ -83,13 +85,56 @@ export function DecisionTerminal() {
     payload.meta.controls.risk.max_daily_loss,
   ]);
 
-  const confidenceSeries = useMemo(
+  const equityCurve = useMemo(() => payload.performance.equity_curve || [], [payload.performance.equity_curve]);
+
+  const drawdownSeries = useMemo(() => {
+    let peak = Number.NEGATIVE_INFINITY;
+    return equityCurve.map((row) => {
+      const eq = Number(row.equity || 0);
+      peak = Math.max(peak, eq);
+      return {
+        idx: row.idx,
+        drawdown: peak > 0 ? peak - eq : 0,
+      };
+    });
+  }, [equityCurve]);
+
+  const rollingMetrics = useMemo(() => {
+    const rows = activeHistory.slice(-30);
+    if (rows.length < 3) {
+      return { sharpe: 0, volatility: 0, winRate: payload.performance.win_rate };
+    }
+    const pnls = rows.map((r) => Number(r.pnl || 0));
+    const deltas: number[] = [];
+    for (let i = 1; i < pnls.length; i += 1) {
+      deltas.push(pnls[i] - pnls[i - 1]);
+    }
+    const mean = deltas.reduce((acc, v) => acc + v, 0) / Math.max(deltas.length, 1);
+    const variance = deltas.reduce((acc, v) => acc + (v - mean) ** 2, 0) / Math.max(deltas.length, 1);
+    const sigma = Math.sqrt(variance);
+    const sharpe = sigma > 0 ? (mean / sigma) * Math.sqrt(deltas.length) : 0;
+    const wins = deltas.filter((v) => v > 0).length;
+    return {
+      sharpe,
+      volatility: sigma,
+      winRate: wins / Math.max(deltas.length, 1),
+    };
+  }, [activeHistory, payload.performance.win_rate]);
+
+  const strategyPnlBreakdown = useMemo(
     () =>
-      activeHistory.slice(-20).map((row: { confidence: number }, idx: number) => ({
-        idx,
-        confidence: Number(row.confidence || 0),
-      })),
-    [activeHistory],
+      payload.strategy_intelligence
+        .slice(0, 5)
+        .map((row) => ({ strategy: row.strategy.replace("_", " "), pnl: Number(row.total_pnl || 0) })),
+    [payload.strategy_intelligence],
+  );
+
+  const recentRiskFailures = useMemo(
+    () =>
+      payload.why_not_trade
+        .slice(-30)
+        .filter((row) => row.checks.some((check) => !check.passed)).length,
+    [payload.why_not_trade],
   );
 
   const pnlSpark = d.account.pnl_spark || [];
@@ -243,6 +288,82 @@ export function DecisionTerminal() {
         </Card>
       </section>
 
+      <section className="mb-3 grid grid-cols-1 gap-3 2xl:grid-cols-3">
+        <Card className="p-4 2xl:col-span-2">
+          <CardTitle>Portfolio Live Analytics</CardTitle>
+          <CardBody className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4 text-xs">
+              <div className="rounded border border-terminal-border p-2">
+                Rolling Sharpe
+                <div className="mt-1 text-terminal-neutral">{rollingMetrics.sharpe.toFixed(2)}</div>
+              </div>
+              <div className="rounded border border-terminal-border p-2">
+                Rolling Volatility
+                <div className="mt-1 text-terminal-neutral">{rollingMetrics.volatility.toFixed(2)}</div>
+              </div>
+              <div className="rounded border border-terminal-border p-2">
+                Rolling Win Rate
+                <div className="mt-1 text-terminal-neutral">{(rollingMetrics.winRate * 100).toFixed(1)}%</div>
+              </div>
+              <div className="rounded border border-terminal-border p-2">
+                Max Drawdown
+                <div className="mt-1 text-terminal-blocked">${fmt(payload.performance.max_drawdown)}</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <div className="h-[170px] rounded border border-terminal-border bg-black/20 p-2">
+                {mounted ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={equityCurve}>
+                      <XAxis dataKey="idx" hide />
+                      <YAxis hide />
+                      <Tooltip formatter={(v: number) => `$${fmt(Number(v))}`} />
+                      <Area type="monotone" dataKey="equity" stroke="#22c55e" fill="#22c55e33" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full w-full" />
+                )}
+              </div>
+              <div className="h-[170px] rounded border border-terminal-border bg-black/20 p-2">
+                {mounted ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={drawdownSeries}>
+                      <XAxis dataKey="idx" hide />
+                      <YAxis hide />
+                      <Tooltip formatter={(v: number) => `$${fmt(Number(v))}`} />
+                      <Line type="monotone" dataKey="drawdown" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full w-full" />
+                )}
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
+        <Card className="p-4">
+          <CardTitle>Per-Strategy PnL</CardTitle>
+          <CardBody>
+            <div className="h-[250px] rounded border border-terminal-border bg-black/20 p-2">
+              {mounted ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={strategyPnlBreakdown}>
+                    <XAxis dataKey="strategy" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                    <YAxis hide />
+                    <Tooltip formatter={(v: number) => `$${fmt(Number(v))}`} />
+                    <Bar dataKey="pnl" fill="#38bdf8" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full w-full" />
+              )}
+            </div>
+          </CardBody>
+        </Card>
+      </section>
+
       <section className="mb-3">
         <Card className="p-4">
           <CardTitle className="flex items-center gap-2"><Info className="h-4 w-4" /> Thought Stream</CardTitle>
@@ -355,46 +476,12 @@ export function DecisionTerminal() {
           </CardBody>
         </Card>
 
-        <Card className="p-4">
-          <CardTitle className="flex items-center gap-2"><Zap className="h-4 w-4" /> Execution Tracker</CardTitle>
-          <CardBody>
-            <div className="mb-4 space-y-2">
-              {[
-                { key: "signal", label: "Signal" },
-                { key: "decision", label: "Decision" },
-                { key: "sent", label: "Sent" },
-                { key: "filled", label: "Filled" },
-              ].map((step) => {
-                const status = d.decision.pipeline[step.key] ?? "idle";
-                const tone = status === "done" ? "bg-terminal-buy" : status === "blocked" ? "bg-terminal-blocked" : "bg-terminal-muted";
-                return (
-                  <div key={step.key} className="flex items-center justify-between rounded-md border border-terminal-border px-3 py-2" title={`Order stage ${step.label}: ${status}`}>
-                    <span className="text-sm">{step.label}</span>
-                    <span className={`h-2.5 w-2.5 rounded-full ${tone}`} title={`status: ${status}`} />
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="h-[120px] rounded-md border border-terminal-border bg-black/20 p-2">
-              {mounted ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={confidenceSeries}>
-                    <XAxis dataKey="idx" hide />
-                    <YAxis domain={[0, 1]} hide />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "#121821", border: "1px solid #1f2933", color: "#f5f7fa" }}
-                      formatter={(v: number) => `${(Number(v) * 100).toFixed(1)}%`}
-                    />
-                    <Area type="monotone" dataKey="confidence" stroke="#3b82f6" fill="#3b82f633" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full w-full" />
-              )}
-            </div>
-          </CardBody>
-        </Card>
+        <ExecutionOrderPanel
+          pipeline={d.decision.pipeline}
+          history={activeHistory}
+          openOrders={d.account.open_orders}
+          fmt={fmt}
+        />
       </section>
 
       <section className="mb-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
@@ -408,7 +495,28 @@ export function DecisionTerminal() {
           updateRisk={updateRisk}
         />
 
-        <StrategyIntelligencePanel rows={payload.strategy_intelligence} mounted={mounted} fmt={fmt} />
+        <StrategyIntelligencePanel
+          rows={payload.strategy_intelligence}
+          history={activeHistory}
+          controls={{ strategies: payload.meta.controls.strategies, kill_switch: payload.meta.controls.kill_switch }}
+          mounted={mounted}
+          fmt={fmt}
+        />
+      </section>
+
+      <section className="mb-3">
+        <RiskDashboard
+          symbol={d.position.symbol}
+          positionSize={d.position.size}
+          price={d.position.price}
+          maxPositionSize={payload.meta.controls.risk.max_position_size}
+          confidenceThreshold={payload.meta.controls.risk.confidence_threshold}
+          maxDrawdown={payload.performance.max_drawdown}
+          alerts={payload.alerts}
+          recentRiskFailures={recentRiskFailures}
+          killSwitch={payload.meta.controls.kill_switch}
+          fmt={fmt}
+        />
       </section>
 
       <AdvancedPanels

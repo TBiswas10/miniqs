@@ -22,13 +22,50 @@ class TestFeedbackLoop(unittest.TestCase):
         before = dict(loop.strategy_weights)
 
         metrics = {
-            "mean_reversion": {"win_rate": 0.0, "avg_trade_pnl": -10.0, "max_drawdown": 10.0},
-            "momentum": {"win_rate": 1.0, "avg_trade_pnl": 10.0, "max_drawdown": 0.0},
+            "mean_reversion": {
+                "hit_rate": 0.0,
+                "avg_trade_pnl": -10.0,
+                "max_drawdown": 10.0,
+                "sharpe_ratio": -0.5,
+                "trade_count": 1.0,
+            },
+            "momentum": {
+                "hit_rate": 1.0,
+                "avg_trade_pnl": 10.0,
+                "max_drawdown": 0.0,
+                "sharpe_ratio": 0.8,
+                "trade_count": 1.0,
+            },
         }
         after = loop.update(metrics)
 
         self.assertLessEqual(abs(after["mean_reversion"] - before["mean_reversion"]), 0.02)
         self.assertLessEqual(abs(after["momentum"] - before["momentum"]), 0.02)
+
+    def test_auto_disable_underperforming_strategy(self) -> None:
+        loop = FeedbackLoop(
+            strategy_weights={"mean_reversion": 0.5, "momentum": 0.5},
+            disable_min_trades=5.0,
+        )
+        metrics = {
+            "mean_reversion": {
+                "hit_rate": 0.2,
+                "avg_trade_pnl": -5.0,
+                "max_drawdown": 0.4,
+                "sharpe_ratio": -0.4,
+                "trade_count": 12.0,
+            },
+            "momentum": {
+                "hit_rate": 0.65,
+                "avg_trade_pnl": 2.0,
+                "max_drawdown": 0.1,
+                "sharpe_ratio": 0.6,
+                "trade_count": 12.0,
+            },
+        }
+        loop.update(metrics)
+        self.assertFalse(loop.is_enabled("mean_reversion"))
+        self.assertEqual(loop.strategy_weights["mean_reversion"], 0.0)
 
 
 if __name__ == "__main__":

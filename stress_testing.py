@@ -160,7 +160,7 @@ def run_stress_test(
 		with tempfile.TemporaryDirectory() as tmp:
 			db_path = str(Path(tmp) / f"stress_{scenario_name}.db")
 			portfolio = Portfolio(db_path=db_path, initial_cash=float(cfg.get("initial_cash", 100000.0)))
-			execution = ExecutionEngine(portfolio=portfolio, paper_mode=True, debug=False)
+			execution = ExecutionEngine(portfolio=portfolio, paper_mode=True, debug=False, realistic_simulation=True)
 			features = FeatureEngine(
 				ma_window=int(cfg.get("ma_window", 20)),
 				long_ma_window=int(cfg.get("long_ma_window", 50)),

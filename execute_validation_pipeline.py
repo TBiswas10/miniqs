@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from backtest import run_backtest, optimize_parameters
+from backtest import run_backtest, optimize_parameters, run_walk_forward_backtest
 from data_feed import DataFeed
 from execution import ExecutionEngine
 from feature_engine import FeatureEngine
@@ -171,39 +171,26 @@ class ValidationPipeline:
         results = []
         print(f"[walk_forward] Running walk-forward test (window={window_size}, step={step_size})...")
 
-        for wf_idx in range(0, len(prices) - window_size - step_size, step_size):
-            train_end = wf_idx + window_size
-            test_end = train_end + step_size
-
-            if test_end > len(prices):
-                break
-
-            train_prices = prices[:train_end]
-            test_prices = prices[train_end:test_end]
-
-            print(
-                f"  [walk_forward {wf_idx}] Training on ticks 0-{train_end}, "
-                f"testing on {train_end}-{test_end}..."
+        wf = run_walk_forward_backtest(
+            prices,
+            window_size=window_size,
+            step_size=step_size,
+            config=cfg,
+        )
+        for fold in wf["folds"]:
+            results.append(
+                {
+                    "wf_index": fold["wf_index"],
+                    "train_ticks": fold["train_ticks"],
+                    "test_ticks": fold["test_ticks"],
+                    "optimized_config": fold["optimized_config"],
+                    "in_sample_metrics": fold["in_sample"],
+                    "test_metrics": fold["out_of_sample"],
+                    "train_research_version": fold.get("train_research_version"),
+                    "test_research_version": fold.get("test_research_version"),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
             )
-
-            # Optimize on training set
-            opt_result = optimize_parameters(train_prices, base_config=cfg)
-            best_cfg = opt_result["best_config"]
-
-            # Test on unseen window
-            test_result = run_backtest(test_prices, config=best_cfg)
-
-            results.append({
-                "wf_index": wf_idx,
-                "train_ticks": len(train_prices),
-                "test_ticks": len(test_prices),
-                "optimized_config": best_cfg,
-                "test_metrics": test_result["pipeline"],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-
-            # Update base config for incremental optimization
-            cfg = best_cfg
 
         self.reports["walk_forward"] = results
         return results
@@ -326,7 +313,7 @@ class ValidationPipeline:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = str(Path(tmp) / "live_paper_trading.db")
             portfolio = Portfolio(db_path=db_path, initial_cash=float(cfg.get("initial_cash", 100000.0)))
-            execution = ExecutionEngine(portfolio=portfolio, paper_mode=True, debug=False)
+            execution = ExecutionEngine(portfolio=portfolio, paper_mode=True, debug=False, realistic_simulation=True)
             features = FeatureEngine(
                 ma_window=int(cfg.get("ma_window", 20)),
                 long_ma_window=int(cfg.get("long_ma_window", 50)),

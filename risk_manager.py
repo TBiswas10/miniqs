@@ -10,6 +10,7 @@ Output:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Tuple
 
@@ -22,29 +23,136 @@ def _parse_timestamp(value: Any) -> datetime:
 	return datetime.now(timezone.utc)
 
 
-def check_risk(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -> Tuple[bool, str]:
-	"""Validate a proposed trade against core risk constraints.
+@dataclass
+class RiskConfig:
+	base_trade_size: float = 1.0
+	max_position_size: float = 5.0
+	cooldown_seconds: int = 5
+	max_loss_per_session: float = 500.0
+	portfolio_drawdown_limit: float = 0.12
+	per_strategy_drawdown_limit: float = 0.08
+	extreme_loss_kill_switch: float = 1200.0
+	strategy_kill_loss: float = 400.0
+	vol_target: float = 0.01
+	vol_floor: float = 0.002
+	vol_ceiling: float = 0.04
+	low_vol_multiplier: float = 1.25
+	high_vol_multiplier: float = 0.6
+	min_trade_size: float = 0.1
+	max_trade_size: float = 2.0
 
-	Input:
-	- trade: {
-		"action": "buy" | "sell" | "hold",
-		"size": float,
-		"confidence": float,
-		"timestamp": datetime | iso-string (optional)
-	  }
-	- portfolio_state: {
-		"current_position": float,
-		"last_trade_timestamp": datetime | iso-string | None,
-		"session_loss": float,
-		"max_position_size": float,
-		"cooldown_seconds": int,
-		"max_loss_per_session": float
-	  }
 
-	Output:
-	- (True, "allowed") if trade is allowed
-	- (False, "...") with block reason if rule is violated
-	"""
+@dataclass
+class RiskEngine:
+	"""Stateful risk engine for dynamic sizing and kill-switch controls."""
+
+	initial_equity: float
+	config: RiskConfig = field(default_factory=RiskConfig)
+	global_kill_switch: bool = False
+	strategy_kill_switch: Dict[str, bool] = field(default_factory=dict)
+	peak_equity: float = 0.0
+	strategy_peak_pnl: Dict[str, float] = field(default_factory=dict)
+	strategy_live_pnl: Dict[str, float] = field(default_factory=dict)
+
+	def __post_init__(self) -> None:
+		if self.initial_equity <= 0:
+			raise ValueError("initial_equity must be positive")
+		if self.peak_equity <= 0:
+			self.peak_equity = float(self.initial_equity)
+
+	def assess_trade(
+		self,
+		trade: Dict[str, Any],
+		portfolio_state: Dict[str, Any],
+	) -> Tuple[bool, str, Dict[str, Any], Dict[str, Any]]:
+		"""Evaluate and adapt trade risk with dynamic sizing and kill-switches."""
+		action = str(trade.get("action", "hold")).lower()
+		strategy = str(trade.get("strategy", "unknown"))
+		adjusted_trade = dict(trade)
+
+		flags = {
+			"global_kill_switch": self.global_kill_switch,
+			"strategy_kill_switch": bool(self.strategy_kill_switch.get(strategy, False)),
+		}
+
+		if self.global_kill_switch:
+			return False, "blocked: global kill switch engaged", adjusted_trade, flags
+		if self.strategy_kill_switch.get(strategy, False):
+			return False, f"blocked: strategy_kill_switch {strategy}", adjusted_trade, flags
+
+		current_equity = float(portfolio_state.get("equity", self.initial_equity))
+		self.peak_equity = max(self.peak_equity, current_equity)
+		portfolio_dd = (self.peak_equity - current_equity) / max(self.peak_equity, 1e-9)
+		if portfolio_dd >= self.config.portfolio_drawdown_limit:
+			self.global_kill_switch = True
+			flags["global_kill_switch"] = True
+			return False, "blocked: portfolio drawdown kill switch", adjusted_trade, flags
+
+		total_pnl = float(portfolio_state.get("total_pnl", 0.0))
+		if total_pnl <= -abs(self.config.extreme_loss_kill_switch):
+			self.global_kill_switch = True
+			flags["global_kill_switch"] = True
+			return False, "blocked: extreme loss kill switch", adjusted_trade, flags
+
+		market_vol = float(portfolio_state.get("market_volatility", self.config.vol_target))
+		confidence = float(trade.get("confidence", 0.5))
+		strategy_weight = float(portfolio_state.get("strategy_weight", 1.0))
+		adjusted_size = self._volatility_scaled_size(
+			confidence=confidence,
+			market_volatility=market_vol,
+			strategy_weight=strategy_weight,
+		)
+		adjusted_trade["size"] = adjusted_size
+
+		allow, reason = _basic_rule_checks(adjusted_trade, portfolio_state)
+		if not allow:
+			return False, reason, adjusted_trade, flags
+
+		return True, "allowed", adjusted_trade, flags
+
+	def _volatility_scaled_size(
+		self,
+		*,
+		confidence: float,
+		market_volatility: float,
+		strategy_weight: float,
+	) -> float:
+		vol = min(max(market_volatility, self.config.vol_floor), self.config.vol_ceiling)
+		inv_vol_scale = self.config.vol_target / max(vol, 1e-9)
+		if vol <= self.config.vol_target:
+			regime_mult = self.config.low_vol_multiplier
+		else:
+			regime_mult = self.config.high_vol_multiplier
+
+		conf_scale = max(0.4, min(1.4, confidence))
+		raw_size = (
+			self.config.base_trade_size
+			* inv_vol_scale
+			* regime_mult
+			* max(0.0, strategy_weight)
+			* conf_scale
+		)
+		return max(self.config.min_trade_size, min(self.config.max_trade_size, raw_size))
+
+	def record_execution(self, strategy: str, realized_pnl_trade: float, equity: float) -> None:
+		self.peak_equity = max(self.peak_equity, float(equity))
+		self.strategy_live_pnl[strategy] = self.strategy_live_pnl.get(strategy, 0.0) + float(realized_pnl_trade)
+		self.strategy_peak_pnl[strategy] = max(
+			self.strategy_peak_pnl.get(strategy, 0.0),
+			self.strategy_live_pnl[strategy],
+		)
+
+		peak = self.strategy_peak_pnl[strategy]
+		live = self.strategy_live_pnl[strategy]
+		strategy_dd = (peak - live) / max(abs(peak), self.initial_equity)
+		if strategy_dd >= self.config.per_strategy_drawdown_limit:
+			self.strategy_kill_switch[strategy] = True
+
+		if live <= -abs(self.config.strategy_kill_loss):
+			self.strategy_kill_switch[strategy] = True
+
+
+def _basic_rule_checks(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -> Tuple[bool, str]:
 	action = str(trade.get("action", "hold")).lower()
 	size = float(trade.get("size", 0.0))
 	now = _parse_timestamp(trade.get("timestamp"))
@@ -78,3 +186,29 @@ def check_risk(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -> Tuple[
 		return False, "blocked: max position size exceeded"
 
 	return True, "allowed"
+
+
+def check_risk(trade: Dict[str, Any], portfolio_state: Dict[str, Any]) -> Tuple[bool, str]:
+	"""Validate a proposed trade against core risk constraints.
+
+	Input:
+	- trade: {
+		"action": "buy" | "sell" | "hold",
+		"size": float,
+		"confidence": float,
+		"timestamp": datetime | iso-string (optional)
+	  }
+	- portfolio_state: {
+		"current_position": float,
+		"last_trade_timestamp": datetime | iso-string | None,
+		"session_loss": float,
+		"max_position_size": float,
+		"cooldown_seconds": int,
+		"max_loss_per_session": float
+	  }
+
+	Output:
+	- (True, "allowed") if trade is allowed
+	- (False, "...") with block reason if rule is violated
+	"""
+	return _basic_rule_checks(trade, portfolio_state)

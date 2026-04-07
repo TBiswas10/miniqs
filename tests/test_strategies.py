@@ -4,6 +4,7 @@ import unittest
 from feature_engine import FeatureSnapshot
 from strategies.mean_reversion import generate_signal as mean_reversion_signal
 from strategies.momentum import generate_signal as momentum_signal
+from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
 
 
 def _features(price: float, mean: float, momentum: float) -> FeatureSnapshot:
@@ -46,6 +47,29 @@ class TestMomentumStrategy(unittest.TestCase):
 
     def test_hold_on_small_momentum(self) -> None:
         signal = momentum_signal(_features(price=100.0, mean=100.0, momentum=0.0005), momentum_threshold=0.002)
+        self.assertEqual(signal.action, "hold")
+
+
+class TestVolatilityBreakoutStrategy(unittest.TestCase):
+    def test_buy_on_volatility_breakout(self) -> None:
+        signal = volatility_breakout_signal(
+            _features(price=100.0, mean=100.0, momentum=0.03),
+            breakout_factor=1.2,
+        )
+        self.assertEqual(signal.action, "buy")
+
+    def test_sell_on_volatility_breakdown(self) -> None:
+        signal = volatility_breakout_signal(
+            _features(price=100.0, mean=100.0, momentum=-0.03),
+            breakout_factor=1.2,
+        )
+        self.assertEqual(signal.action, "sell")
+
+    def test_hold_inside_vol_band(self) -> None:
+        signal = volatility_breakout_signal(
+            _features(price=100.0, mean=100.0, momentum=0.001),
+            breakout_factor=1.2,
+        )
         self.assertEqual(signal.action, "hold")
 
 

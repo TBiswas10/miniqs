@@ -2,44 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import threading
-import time
-from collections import deque
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from statistics import mean, pstdev
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+
+from .event_engine import EventEngine
+from .event_persistence import EventStore
+from .event_schemas import EventMessage, KillSwitchRequest, RiskUpdateRequest, StartStopRequest, StrategyToggleRequest
 from quant_control_state import load_control_state, save_control_state
 
-TRACE_PATH = Path(__file__).resolve().parents[2] / "logs" / "alpaca_brain_trace.jsonl"
-MAX_EVENTS = 160
-DB_PATH = Path(__file__).resolve().parents[2] / "logs" / "decision_terminal.db"
+ROOT = Path(__file__).resolve().parents[2]
+TRACE_PATH = ROOT / "logs" / "alpaca_brain_trace.jsonl"
+DB_PATH = ROOT / "logs" / "decision_terminal.db"
+JSONL_PATH = ROOT / "logs" / "decision_events.jsonl"
 
-
-class StrategyToggleRequest(BaseModel):
-    strategy: str
-    enabled: bool
-
-
-class RiskUpdateRequest(BaseModel):
-    confidence_threshold: float | None = None
-    max_position_size: float | None = None
-    max_daily_loss: float | None = None
-
-
-class TradingStateRequest(BaseModel):
-    enabled: bool
-
-
-class KillSwitchRequest(BaseModel):
-    engage: bool
-
-app = FastAPI(title="Decision Intelligence Terminal API", version="1.0.0")
-
+app = FastAPI(title="Quant Control and Data Engine", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,514 +31,285 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CONTROL_STATE: dict[str, Any] = load_control_state()
 CONTROL_LOCK = threading.Lock()
-SNAPSHOT_LOCK = threading.Lock()
-SNAPSHOT_CACHE: dict[str, Any] = {"payload": None, "built_at": 0.0, "trace_mtime": None}
-LAST_INGEST_AT = 0.0
+CONTROL_STATE: Dict[str, Any] = load_control_state()
+
+STORE = EventStore(DB_PATH, JSONL_PATH)
 
 
-def _db_connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _init_db() -> None:
-    conn = _db_connect()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS decisions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            signal TEXT,
-            action TEXT,
-            strategy TEXT,
-            confidence REAL,
-            pnl REAL,
-            price REAL,
-            allowed INTEGER,
-            reason TEXT,
-            payload TEXT,
-            UNIQUE(ts, strategy, action)
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS control_actions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            action TEXT NOT NULL,
-            details TEXT
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS counterfactuals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            strategy TEXT,
-            side TEXT,
-            entry_price REAL,
-            simulated_exit_price REAL,
-            simulated_pnl REAL,
-            payload TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-def _log_control_action(action: str, details: dict[str, Any]) -> None:
-    conn = _db_connect()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO control_actions(ts, action, details) VALUES (?, ?, ?)",
-        (datetime.now(timezone.utc).isoformat(), action, json.dumps(details)),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _parse_ts(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    raw = value.strip()
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def _read_trace(limit: int = MAX_EVENTS) -> list[dict[str, Any]]:
-    if not TRACE_PATH.exists():
-        return []
-    events: deque[dict[str, Any]] = deque(maxlen=limit)
-    with TRACE_PATH.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(obj, dict):
-                events.append(obj)
-    return list(events)
-
-
-def _risk_checks(risk: dict[str, Any] | None) -> list[dict[str, Any]]:
-    checks = [
-        {"key": "confidence", "label": "Confidence threshold", "passed": True, "reason": "Signal confidence accepted"},
-        {"key": "cooldown", "label": "Cooldown window", "passed": True, "reason": "Cooldown clear"},
-        {"key": "position", "label": "Position limits", "passed": True, "reason": "Position size valid"},
-        {"key": "drawdown", "label": "Drawdown guard", "passed": True, "reason": "Loss guard within limit"},
-    ]
-    if not risk:
-        return checks
-    if risk.get("allowed"):
-        return checks
-    reason = str(risk.get("reason", "unknown")).lower()
-    for check in checks:
-        if check["key"] in reason:
-            check["passed"] = False
-            check["reason"] = str(risk.get("reason", "risk block"))
-            return checks
-    checks[-1]["passed"] = False
-    checks[-1]["reason"] = str(risk.get("reason", "risk block"))
-    return checks
-
-
-def _signal_side(chosen: dict[str, Any] | None) -> str:
-    action = str((chosen or {}).get("action", "HOLD")).upper()
-    if action in {"BUY", "LONG"}:
-        return "BUY"
-    if action in {"SELL", "SHORT"}:
-        return "SELL"
-    return "HOLD"
-
-
-def _ingest_decisions_to_db(events: list[dict[str, Any]]) -> None:
-    rows: list[tuple[Any, ...]] = []
-    for ev in events:
-        if ev.get("kind") != "decision":
-            continue
-        chosen = ev.get("chosen") if isinstance(ev.get("chosen"), dict) else {}
-        risk = ev.get("risk") if isinstance(ev.get("risk"), dict) else {}
-        action = "BLOCKED" if risk and not risk.get("allowed") else "EXECUTED"
-        signal = _signal_side(chosen)
-        if signal == "HOLD":
-            action = "HOLD"
-        rows.append(
-            (
-                str(ev.get("timestamp") or ev.get("ts") or "--"),
-                signal,
-                action,
-                str(chosen.get("strategy") or "none"),
-                float(chosen.get("confidence") or 0.0),
-                float(ev.get("total_pnl") or 0.0),
-                float(ev.get("price") or 0.0),
-                1 if risk.get("allowed") else 0,
-                str(risk.get("reason") or chosen.get("reason") or ev.get("detail") or "--"),
-                json.dumps(ev),
-            )
-        )
-
-    if not rows:
-        return
-
-    conn = _db_connect()
-    cur = conn.cursor()
-    cur.executemany(
-        """
-        INSERT OR IGNORE INTO decisions(
-            ts, signal, action, strategy, confidence, pnl, price, allowed, reason, payload
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        rows,
-    )
-    conn.commit()
-    conn.close()
-
-
-def _counterfactuals(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    decision_events = [ev for ev in events if ev.get("kind") == "decision"]
-    results: list[dict[str, Any]] = []
-    for idx, ev in enumerate(decision_events):
-        risk = ev.get("risk") if isinstance(ev.get("risk"), dict) else {}
-        chosen = ev.get("chosen") if isinstance(ev.get("chosen"), dict) else {}
-        if risk.get("allowed"):
-            continue
-        side = _signal_side(chosen)
-        if side == "HOLD":
-            continue
-        entry = float(ev.get("price") or 0.0)
-        future_idx = min(idx + 10, len(decision_events) - 1)
-        exit_price = float(decision_events[future_idx].get("price") or entry)
-        simulated = (exit_price - entry) if side == "BUY" else (entry - exit_price)
-        results.append(
-            {
-                "ts": ev.get("timestamp") or ev.get("ts") or "--",
-                "strategy": chosen.get("strategy", "none"),
-                "side": side,
-                "entry_price": entry,
-                "simulated_exit_price": exit_price,
-                "simulated_pnl": simulated,
-                "reason_blocked": risk.get("reason", "unknown"),
-            }
-        )
-    return results[-30:]
-
-
-def _record_counterfactuals(counterfactuals: list[dict[str, Any]]) -> None:
-    if not counterfactuals:
-        return
-    conn = _db_connect()
-    cur = conn.cursor()
-    cur.executemany(
-        """
-        INSERT INTO counterfactuals(ts, strategy, side, entry_price, simulated_exit_price, simulated_pnl, payload)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                cf["ts"],
-                cf["strategy"],
-                cf["side"],
-                cf["entry_price"],
-                cf["simulated_exit_price"],
-                cf["simulated_pnl"],
-                json.dumps(cf),
-            )
-            for cf in counterfactuals[-5:]
-        ],
-    )
-    conn.commit()
-    conn.close()
-
-
-def _strategy_intelligence(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    per_strategy: dict[str, dict[str, Any]] = {}
-    for row in history:
-        strategy = str(row.get("strategy") or "none")
-        if strategy not in per_strategy:
-            per_strategy[strategy] = {
-                "strategy": strategy,
-                "trades": 0,
-                "wins": 0,
-                "total_pnl": 0.0,
-                "confidence_avg": 0.0,
-                "confidence_samples": 0,
-                "trend": [],
-            }
-        s = per_strategy[strategy]
-        pnl = float(row.get("pnl") or 0.0)
-        conf = float(row.get("confidence") or 0.0)
-        s["trades"] += 1
-        s["wins"] += 1 if pnl > 0 else 0
-        s["total_pnl"] += pnl
-        s["confidence_samples"] += 1
-        s["confidence_avg"] += conf
-        s["trend"].append({"ts": row.get("ts"), "pnl": pnl, "confidence": conf})
-
-    results = []
-    for s in per_strategy.values():
-        samples = max(int(s["confidence_samples"]), 1)
-        results.append(
-            {
-                "strategy": s["strategy"],
-                "trades": s["trades"],
-                "win_rate": s["wins"] / max(s["trades"], 1),
-                "total_pnl": s["total_pnl"],
-                "confidence_avg": s["confidence_avg"] / samples,
-                "trend": s["trend"][-20:],
-            }
-        )
-    return sorted(results, key=lambda x: x["total_pnl"], reverse=True)
-
-
-def _performance_analytics(history: list[dict[str, Any]]) -> dict[str, Any]:
-    if not history:
-        return {
-            "win_rate": 0.0,
-            "avg_profit": 0.0,
-            "max_drawdown": 0.0,
-            "sharpe_approx": 0.0,
-            "equity_curve": [],
-        }
-
-    pnls = [float(row.get("pnl") or 0.0) for row in history]
-    wins = sum(1 for p in pnls if p > 0)
-    avg = sum(pnls) / max(len(pnls), 1)
-
-    equity = []
-    cumulative = 0.0
-    peak = 0.0
-    max_dd = 0.0
-    for idx, p in enumerate(pnls):
-        cumulative += p
-        peak = max(peak, cumulative)
-        drawdown = peak - cumulative
-        max_dd = max(max_dd, drawdown)
-        equity.append({"idx": idx, "equity": cumulative})
-
-    mean = avg
-    variance = sum((p - mean) ** 2 for p in pnls) / max(len(pnls), 1)
-    std = variance ** 0.5
-    sharpe = (mean / std) * (len(pnls) ** 0.5) if std > 0 else 0.0
-
-    return {
-        "win_rate": wins / max(len(pnls), 1),
-        "avg_profit": avg,
-        "max_drawdown": max_dd,
-        "sharpe_approx": sharpe,
-        "equity_curve": equity[-60:],
-    }
-
-
-def _alerts_payload(history: list[dict[str, Any]], counterfactuals: list[dict[str, Any]]) -> list[dict[str, str]]:
-    alerts: list[dict[str, str]] = []
-    recent = history[-20:]
-    blocked_count = sum(1 for row in recent if row.get("action") == "BLOCKED")
-    if blocked_count >= 10:
-        alerts.append({"level": "warn", "message": "High blocked-trade ratio in recent decisions."})
-
-    recent_pnls = [float(row.get("pnl") or 0.0) for row in recent]
-    if recent_pnls and min(recent_pnls) < -250:
-        alerts.append({"level": "error", "message": "Large single-step loss detected."})
-
-    if counterfactuals:
-        missed = sum(float(cf.get("simulated_pnl") or 0.0) for cf in counterfactuals[-10:])
-        if missed > 150:
-            alerts.append({"level": "info", "message": "Counterfactual engine indicates significant missed upside."})
-    return alerts
-
-
-def _compute_snapshot() -> dict[str, Any]:
-    global CONTROL_STATE
-    global LAST_INGEST_AT
-
+def _control_copy() -> Dict[str, Any]:
     with CONTROL_LOCK:
-        CONTROL_STATE = load_control_state()
-    events = _read_trace(MAX_EVENTS)
+        return json.loads(json.dumps(CONTROL_STATE))
 
-    now = time.time()
-    if now - LAST_INGEST_AT >= 3.0:
-        _ingest_decisions_to_db(events)
-        LAST_INGEST_AT = now
 
-    latest_decision = next((ev for ev in reversed(events) if ev.get("kind") == "decision"), None)
-    latest_trade = next((ev for ev in reversed(events) if ev.get("kind") == "trade_update"), None)
+def _persist_control(mutated: Dict[str, Any]) -> Dict[str, Any]:
+    global CONTROL_STATE
+    with CONTROL_LOCK:
+        CONTROL_STATE = save_control_state(mutated)
+        return json.loads(json.dumps(CONTROL_STATE))
 
-    latest_connection = next((ev for ev in reversed(events) if ev.get("kind") == "connection"), None)
-    reconnects = sum(
-        1 for ev in events if ev.get("kind") == "connection" and "reconnect" in str(ev.get("event", "")).lower()
+
+async def _trigger_kill_switch(reason: str) -> None:
+    state = _control_copy()
+    if state.get("kill_switch"):
+        return
+    state["kill_switch"] = True
+    state["trading_enabled"] = False
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id="system",
+            payload={
+                "risk_type": "kill_switch",
+                "severity": "error",
+                "reason": f"Automatic kill switch triggered: {reason}",
+                "controls": persisted,
+            },
+        )
     )
 
-    chosen = latest_decision.get("chosen") if isinstance(latest_decision, dict) and isinstance(latest_decision.get("chosen"), dict) else None
-    risk = latest_decision.get("risk") if isinstance(latest_decision, dict) and isinstance(latest_decision.get("risk"), dict) else None
 
-    signal = _signal_side(chosen)
-    action = "BLOCKED" if risk and not risk.get("allowed") else "EXECUTE"
-    if signal == "HOLD":
-        action = "HOLD"
+ENGINE = EventEngine(
+    trace_path=TRACE_PATH,
+    store=STORE,
+    get_control_state=_control_copy,
+    trigger_kill_switch=_trigger_kill_switch,
+)
 
-    ts_value = (latest_decision or {}).get("timestamp") or (latest_decision or {}).get("ts")
-    tick_ts = _parse_ts(ts_value)
-    tick_age = None
-    if tick_ts is not None:
-        tick_age = max((datetime.now(timezone.utc) - tick_ts).total_seconds(), 0.0)
 
-    thought_stream = []
-    for ev in events[-80:]:
-        stage = str(ev.get("stage") or ev.get("kind") or "event")
-        level = "info"
-        if stage in {"risk_blocked", "auth_failed"}:
-            level = "warn"
-        if "error" in stage.lower() or "fail" in stage.lower():
-            level = "error"
-        thought_stream.append(
-            {
-                "ts": ev.get("timestamp") or ev.get("ts") or "--",
-                "level": level,
-                "stage": stage,
-                "message": ev.get("detail") or ev.get("decision") or "update",
-                "symbol": ev.get("symbol"),
-            }
-        )
+@app.on_event("startup")
+async def startup() -> None:
+    await ENGINE.start()
 
-    history = []
-    for ev in [e for e in events if e.get("kind") == "decision"][-60:]:
-        ev_chosen = ev.get("chosen") if isinstance(ev.get("chosen"), dict) else None
-        ev_risk = ev.get("risk") if isinstance(ev.get("risk"), dict) else None
-        side = _signal_side(ev_chosen)
-        status = "BLOCKED" if ev_risk and not ev_risk.get("allowed") else "EXECUTED"
-        if side == "HOLD":
-            status = "HOLD"
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await ENGINE.stop()
+
+
+def _build_history(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    portfolio_events = [ev for ev in events if ev["event_type"] == "portfolio_update"]
+    signal_events = [ev for ev in events if ev["event_type"] == "strategy_signal"]
+    risk_events = [ev for ev in events if ev["event_type"] == "risk_event"]
+
+    history: List[Dict[str, Any]] = []
+    for sig in signal_events[-80:]:
+        ts = sig["ts"]
+        side = str(sig["payload"].get("side", "HOLD")).upper()
+        strategy = str(sig.get("strategy_id") or sig["payload"].get("strategy", "none"))
+        blocked = any(
+            r["payload"].get("risk_type") == "trade_block" and str(r.get("strategy_id")) == strategy and abs((datetime.fromisoformat(r["ts"]) - datetime.fromisoformat(ts)).total_seconds()) <= 1.5
+            for r in risk_events[-60:]
+            if "T" in r["ts"] and "T" in ts
+        ) if "T" in ts else False
+        latest_pf = next((p for p in reversed(portfolio_events) if p["ts"] <= ts), portfolio_events[-1] if portfolio_events else None)
+        pnl = float((latest_pf or {}).get("payload", {}).get("total_pnl", 0.0))
         history.append(
             {
-                "ts": ev.get("timestamp") or ev.get("ts") or "--",
-                "symbol": ev.get("symbol", "--"),
+                "ts": ts,
+                "symbol": sig.get("symbol") or "BTC/USD",
                 "signal": side,
-                "action": status,
-                "confidence": (ev_chosen or {}).get("confidence", 0.0),
-                "strategy": (ev_chosen or {}).get("strategy", "none"),
-                "pnl": float(ev.get("total_pnl") or 0.0),
-                "price": ev.get("price"),
-                "reason": (ev_risk or {}).get("reason") or (ev_chosen or {}).get("reason") or ev.get("detail") or "--",
-                "risk_checks": _risk_checks(ev_risk),
-                "raw": ev,
+                "action": "BLOCKED" if blocked else ("HOLD" if side == "HOLD" else "EXECUTED"),
+                "strategy": strategy,
+                "confidence": float(sig["payload"].get("confidence", 0.0)),
+                "pnl": pnl,
+                "price": float((latest_pf or {}).get("payload", {}).get("price", 0.0)),
+                "reason": str(sig["payload"].get("reason", "")),
+                "risk_checks": [
+                    {
+                        "key": "drawdown",
+                        "label": "Drawdown guard",
+                        "passed": not blocked,
+                        "reason": "blocked by risk" if blocked else "within limits",
+                    }
+                ],
+                "raw": sig["payload"],
             }
         )
+    return history
 
-    counterfactuals = _counterfactuals(events)
-    _record_counterfactuals(counterfactuals)
-    strategy_intel = _strategy_intelligence(history)
-    perf = _performance_analytics(history)
-    pnl_spark = [{"idx": i, "pnl": float(row.get("pnl") or 0.0)} for i, row in enumerate(history[-40:])]
-    open_orders = [
-        {
-            "id": str(ev.get("order_id") or ev.get("id") or "--"),
-            "status": str(ev.get("event") or "pending"),
-            "symbol": str(ev.get("symbol") or "BTC/USD"),
-            "price": float(ev.get("price") or 0.0),
-        }
-        for ev in events[-20:]
-        if ev.get("kind") in {"order", "trade_update"} and str(ev.get("event", "")).lower() not in {"fill", "filled"}
-    ][-6:]
 
-    current_ts = str((latest_decision or {}).get("timestamp") or (latest_decision or {}).get("ts") or "--")
-    signal_trend = [
-        {
-            "idx": i,
-            "signal": row.get("signal", "HOLD"),
-            "confidence": float(row.get("confidence") or 0.0),
-        }
-        for i, row in enumerate(history[-25:])
-    ]
-    why_not_rows = [
-        {
-            "ts": row.get("ts"),
-            "action": row.get("action"),
-            "checks": row.get("risk_checks", []),
-            "reason": row.get("reason"),
-        }
-        for row in history[-25:]
-    ]
+def _strategy_intelligence(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    per = defaultdict(lambda: {"trades": 0, "wins": 0, "total_pnl": 0.0, "conf": 0.0, "trend": []})
+    for row in history:
+        st = per[row["strategy"]]
+        st["trades"] += 1
+        st["wins"] += 1 if row["pnl"] > 0 else 0
+        st["total_pnl"] += float(row["pnl"])
+        st["conf"] += float(row["confidence"])
+        st["trend"].append({"ts": row["ts"], "pnl": float(row["pnl"]), "confidence": float(row["confidence"])})
+    out = []
+    for strategy, st in per.items():
+        trades = max(int(st["trades"]), 1)
+        out.append(
+            {
+                "strategy": strategy,
+                "trades": int(st["trades"]),
+                "win_rate": st["wins"] / trades,
+                "total_pnl": st["total_pnl"],
+                "confidence_avg": st["conf"] / trades,
+                "trend": st["trend"][-20:],
+            }
+        )
+    return sorted(out, key=lambda r: r["total_pnl"], reverse=True)
 
-    alerts = _alerts_payload(history, counterfactuals)
 
-    pipeline_status = {
-        "signal": "done" if signal != "HOLD" else "idle",
-        "decision": "done" if latest_decision else "idle",
-        "sent": "done" if latest_trade else ("blocked" if action == "BLOCKED" else "idle"),
-        "filled": "done" if latest_trade and str(latest_trade.get("event", "")).lower() in {"fill", "filled"} else "idle",
-    }
+def _performance(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    pf = [ev for ev in events if ev["event_type"] == "portfolio_update"]
+    if not pf:
+        return {"win_rate": 0.0, "avg_profit": 0.0, "max_drawdown": 0.0, "sharpe_approx": 0.0, "equity_curve": []}
 
-    decision_object = {
-        "signal": {
-            "side": signal,
-            "confidence": float((chosen or {}).get("confidence", 0.0) or 0.0),
-            "strategy": (chosen or {}).get("strategy", "none"),
-            "reason": (chosen or {}).get("reason", "no signal"),
-            "timestamp": current_ts,
-            "trend": signal_trend,
-        },
-        "checks": _risk_checks(risk),
-        "decision": {
-            "action": action,
-            "stage": (latest_decision or {}).get("stage", "idle"),
-            "reason": (risk or {}).get("reason")
-            if action == "BLOCKED"
-            else (chosen or {}).get("reason", "waiting for confidence"),
-            "pipeline": pipeline_status,
-        },
-        "position": {
-            "symbol": (latest_decision or {}).get("symbol", "BTC/USD"),
-            "size": float((latest_decision or {}).get("position_size", 0.0) or 0.0),
-            "price": float((latest_decision or {}).get("price", 0.0) or 0.0),
-        },
-        "account": {
-            "equity": float((latest_decision or {}).get("equity", 0.0) or 0.0),
-            "pnl": float((latest_decision or {}).get("total_pnl", 0.0) or 0.0),
-            "executed_trades": int((latest_decision or {}).get("executed_trades", 0) or 0),
-            "cash": float((latest_decision or {}).get("equity", 0.0) or 0.0) - float((latest_decision or {}).get("position_size", 0.0) or 0.0) * float((latest_decision or {}).get("price", 0.0) or 0.0),
-            "open_orders": open_orders,
-            "pnl_spark": pnl_spark,
-        },
-    }
+    pnls = [float(e["payload"].get("total_pnl", 0.0)) for e in pf[-120:]]
+    eq = [float(e["payload"].get("equity", 0.0)) for e in pf[-120:]]
+    wins = sum(1 for i in range(1, len(pnls)) if pnls[i] - pnls[i - 1] > 0)
+    avg_profit = mean(pnls) if pnls else 0.0
+    peak = 0.0
+    max_dd = 0.0
+    curve = []
+    for idx, value in enumerate(eq):
+        peak = max(peak, value)
+        max_dd = max(max_dd, peak - value)
+        curve.append({"idx": idx, "equity": value})
+
+    deltas = [eq[i] - eq[i - 1] for i in range(1, len(eq))]
+    sigma = pstdev(deltas) if len(deltas) > 1 else 0.0
+    sharpe = (mean(deltas) / sigma) * (len(deltas) ** 0.5) if sigma > 0 else 0.0
 
     return {
-        "decision": decision_object,
+        "win_rate": wins / max(len(pnls) - 1, 1),
+        "avg_profit": avg_profit,
+        "max_drawdown": max_dd,
+        "sharpe_approx": sharpe,
+        "equity_curve": curve[-80:],
+    }
+
+
+def _snapshot() -> Dict[str, Any]:
+    events = STORE.recent_events(limit=500)
+    history = _build_history(events)
+    perf = _performance(events)
+    latest = ENGINE.latest_state()
+
+    risk_events = [ev for ev in events if ev["event_type"] == "risk_event"]
+    order_events = [ev for ev in events if ev["event_type"] == "order_update"]
+    latest_signal = latest.get("signal") or {}
+    latest_portfolio = latest.get("portfolio") or {}
+
+    open_orders = []
+    for order in reversed(order_events[-30:]):
+        state = str(order["payload"].get("state", "")).lower()
+        if state in {"filled", "canceled", "rejected"}:
+            continue
+        open_orders.append(
+            {
+                "id": str(order["payload"].get("order_id", "")),
+                "status": state,
+                "symbol": order.get("symbol") or "BTC/USD",
+                "price": float(order["payload"].get("fill_price", order["payload"].get("expected_price", 0.0))),
+            }
+        )
+        if len(open_orders) >= 6:
+            break
+
+    alerts = [
+        {
+            "level": "error" if str(ev["payload"].get("severity", "warn")) == "error" else "warn",
+            "message": str(ev["payload"].get("reason", "risk event")),
+        }
+        for ev in risk_events[-8:]
+    ]
+
+    current_ts = str(latest_signal.get("ts") or datetime.now(timezone.utc).isoformat())
+    signal_side = str(latest_signal.get("side", "HOLD")).upper()
+    decision_action = "HOLD" if signal_side == "HOLD" else "EXECUTE"
+
+    return {
+        "decision": {
+            "signal": {
+                "side": signal_side,
+                "confidence": float(latest_signal.get("confidence", 0.0)),
+                "strategy": str(latest_signal.get("strategy", "none")),
+                "reason": str(latest_signal.get("reason", "waiting for stream")),
+                "timestamp": current_ts,
+                "trend": [
+                    {"idx": i, "signal": h["signal"], "confidence": float(h["confidence"])}
+                    for i, h in enumerate(history[-25:])
+                ],
+            },
+            "checks": [],
+            "decision": {
+                "action": decision_action,
+                "stage": "live",
+                "reason": str(latest_signal.get("reason", "waiting for stream")),
+                "pipeline": {
+                    "signal": "done" if signal_side != "HOLD" else "idle",
+                    "decision": "done" if signal_side != "HOLD" else "idle",
+                    "sent": "done" if order_events else "idle",
+                    "filled": "done" if any(str(o["payload"].get("state", "")).lower() == "filled" for o in order_events[-20:]) else "idle",
+                },
+            },
+            "position": {
+                "symbol": "BTC/USD",
+                "size": float(latest_portfolio.get("position_size", 0.0)),
+                "price": float(latest_portfolio.get("price", 0.0)),
+            },
+            "account": {
+                "equity": float(latest_portfolio.get("equity", 0.0)),
+                "pnl": float(latest_portfolio.get("total_pnl", 0.0)),
+                "executed_trades": int(sum(1 for h in history if h["action"] == "EXECUTED")),
+                "cash": float(latest_portfolio.get("cash", 0.0)),
+                "open_orders": open_orders,
+                "pnl_spark": [
+                    {"idx": i, "pnl": float(h["pnl"])}
+                    for i, h in enumerate(history[-40:])
+                ],
+            },
+        },
         "meta": {
-            "connected": latest_connection is not None,
-            "connection_event": (latest_connection or {}).get("event", "waiting"),
-            "reconnects": reconnects,
-            "last_tick_age_sec": tick_age,
-            "controls": CONTROL_STATE,
+            "connected": TRACE_PATH.exists(),
+            "connection_event": "streaming" if TRACE_PATH.exists() else "waiting",
+            "reconnects": 0,
+            "last_tick_age_sec": 0,
+            "controls": _control_copy(),
         },
-        "thought_stream": thought_stream,
+        "thought_stream": [
+            {
+                "ts": ev["ts"],
+                "level": "error" if ev["event_type"] == "risk_event" and str(ev["payload"].get("severity", "warn")) == "error" else "info",
+                "stage": ev["event_type"],
+                "message": str(ev["payload"].get("reason", ev["payload"])),
+                "symbol": ev.get("symbol"),
+            }
+            for ev in events[-80:]
+        ],
         "history": history,
-        "why_not_trade": why_not_rows,
-        "strategy_intelligence": strategy_intel,
+        "why_not_trade": [
+            {
+                "ts": ev["ts"],
+                "action": "BLOCKED",
+                "checks": [
+                    {
+                        "key": "risk",
+                        "label": "Risk event",
+                        "passed": False,
+                        "reason": str(ev["payload"].get("reason", "risk event")),
+                    }
+                ],
+                "reason": str(ev["payload"].get("reason", "risk event")),
+            }
+            for ev in risk_events[-30:]
+            if str(ev["payload"].get("risk_type", "")) in {"trade_block", "abnormal_loss", "drawdown_breach", "data_feed_failure"}
+        ],
+        "strategy_intelligence": _strategy_intelligence(history),
         "decision_inspector": {
-            "full_object": latest_decision or {},
-            "features": (latest_decision or {}).get("features", {}),
-            "risk_checks": _risk_checks(risk),
-            "reasoning": (latest_decision or {}).get("detail") or (chosen or {}).get("reason") or "--",
+            "full_object": latest,
+            "features": {},
+            "risk_checks": [],
+            "reasoning": str(latest_signal.get("reason", "waiting for stream")),
         },
-        "counterfactuals": counterfactuals,
+        "counterfactuals": [],
         "performance": perf,
         "replay": {
             "cursor": len(history) - 1,
@@ -566,94 +320,169 @@ def _compute_snapshot() -> dict[str, Any]:
     }
 
 
-def _build_snapshot() -> dict[str, Any]:
-    ttl_seconds = 1.0
-    trace_mtime = TRACE_PATH.stat().st_mtime if TRACE_PATH.exists() else None
-    now = time.time()
-
-    with SNAPSHOT_LOCK:
-        cached_payload = SNAPSHOT_CACHE.get("payload")
-        cached_at = float(SNAPSHOT_CACHE.get("built_at") or 0.0)
-        cached_trace_mtime = SNAPSHOT_CACHE.get("trace_mtime")
-
-        if (
-            cached_payload is not None
-            and now - cached_at < ttl_seconds
-            and cached_trace_mtime == trace_mtime
-        ):
-            return cached_payload
-
-        payload = _compute_snapshot()
-        SNAPSHOT_CACHE["payload"] = payload
-        SNAPSHOT_CACHE["built_at"] = now
-        SNAPSHOT_CACHE["trace_mtime"] = trace_mtime
-        return payload
-
-
-@app.get("/api/decision/snapshot")
-def decision_snapshot() -> dict[str, Any]:
-    return _build_snapshot()
-
-
-@app.post("/api/control/trading")
-def control_trading(payload: TradingStateRequest) -> dict[str, Any]:
-    with CONTROL_LOCK:
-        CONTROL_STATE["trading_enabled"] = payload.enabled
-        if not payload.enabled:
-            CONTROL_STATE["kill_switch"] = False
-        save_control_state(CONTROL_STATE)
-    _log_control_action("trading_toggle", payload.model_dump())
-    return {"ok": True, "control": CONTROL_STATE}
-
-
-@app.post("/api/control/strategy")
-def control_strategy(payload: StrategyToggleRequest) -> dict[str, Any]:
-    strategy = payload.strategy.strip().lower()
-    with CONTROL_LOCK:
-        if strategy not in CONTROL_STATE["strategies"]:
-            raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy}")
-        CONTROL_STATE["strategies"][strategy] = payload.enabled
-        save_control_state(CONTROL_STATE)
-    _log_control_action("strategy_toggle", payload.model_dump())
-    return {"ok": True, "control": CONTROL_STATE}
-
-
-@app.post("/api/control/risk")
-def control_risk(payload: RiskUpdateRequest) -> dict[str, Any]:
-    updates = payload.model_dump(exclude_none=True)
-    with CONTROL_LOCK:
-        for key, value in updates.items():
-            CONTROL_STATE["risk"][key] = float(value)
-        save_control_state(CONTROL_STATE)
-    _log_control_action("risk_update", updates)
-    return {"ok": True, "control": CONTROL_STATE}
-
-
-@app.post("/api/control/kill-switch")
-def control_kill_switch(payload: KillSwitchRequest) -> dict[str, Any]:
-    with CONTROL_LOCK:
-        CONTROL_STATE["kill_switch"] = payload.engage
-        if payload.engage:
-            CONTROL_STATE["trading_enabled"] = False
-        save_control_state(CONTROL_STATE)
-    _log_control_action("kill_switch", payload.model_dump())
-    return {"ok": True, "control": CONTROL_STATE}
-
-
-@app.websocket("/ws/decisions")
-async def decision_stream(ws: WebSocket) -> None:
-    await ws.accept()
-    try:
-        while True:
-            await ws.send_json(_build_snapshot())
-            await asyncio.sleep(1.0)
-    except WebSocketDisconnect:
-        return
-
-
 @app.get("/api/health")
-def health() -> dict[str, bool]:
+def health() -> Dict[str, bool]:
     return {"ok": True}
 
 
-_init_db()
+@app.get("/api/decision/snapshot")
+def decision_snapshot() -> Dict[str, Any]:
+    return _snapshot()
+
+
+@app.get("/api/events/recent")
+def recent_events(limit: int = 200, event_type: str | None = None) -> Dict[str, Any]:
+    return {"events": STORE.recent_events(limit=limit, event_type=event_type)}
+
+
+@app.get("/api/events/replay")
+def replay_events(session_id: str, limit: int = 1000) -> Dict[str, Any]:
+    return {"events": STORE.replay_session(session_id=session_id, limit=limit)}
+
+
+@app.post("/api/control/start")
+async def start_trading() -> Dict[str, Any]:
+    state = _control_copy()
+    state["trading_enabled"] = True
+    state["kill_switch"] = False
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id="system",
+            payload={"risk_type": "control", "severity": "info", "reason": "trading started", "controls": persisted},
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
+@app.post("/api/control/stop")
+async def stop_trading() -> Dict[str, Any]:
+    state = _control_copy()
+    state["trading_enabled"] = False
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id="system",
+            payload={"risk_type": "control", "severity": "warn", "reason": "trading stopped", "controls": persisted},
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
+@app.post("/api/control/trading")
+async def control_trading(payload: StartStopRequest) -> Dict[str, Any]:
+    return await (start_trading() if payload.enabled else stop_trading())
+
+
+@app.post("/api/control/strategy")
+async def control_strategy(payload: StrategyToggleRequest) -> Dict[str, Any]:
+    state = _control_copy()
+    strategy = payload.strategy.strip().lower()
+    if strategy not in state.get("strategies", {}):
+        raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy}")
+    state["strategies"][strategy] = payload.enabled
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id=strategy,
+            payload={
+                "risk_type": "control",
+                "severity": "info",
+                "reason": f"strategy {strategy} {'enabled' if payload.enabled else 'disabled'}",
+                "controls": persisted,
+            },
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
+@app.post("/api/control/risk")
+async def control_risk(payload: RiskUpdateRequest) -> Dict[str, Any]:
+    updates = payload.model_dump(exclude_none=True)
+    state = _control_copy()
+    for key, value in updates.items():
+        state.setdefault("risk", {})[key] = float(value)
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id="system",
+            payload={"risk_type": "control", "severity": "info", "reason": "risk parameters updated", "updates": updates},
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
+@app.post("/api/control/kill-switch")
+async def control_kill_switch(payload: KillSwitchRequest) -> Dict[str, Any]:
+    state = _control_copy()
+    state["kill_switch"] = payload.engage
+    if payload.engage:
+        state["trading_enabled"] = False
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id="system",
+            payload={
+                "risk_type": "kill_switch",
+                "severity": "error" if payload.engage else "info",
+                "reason": "kill switch engaged" if payload.engage else "kill switch released",
+            },
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
+@app.post("/api/control/reset-portfolio")
+async def reset_portfolio() -> Dict[str, Any]:
+    state = _control_copy()
+    state["portfolio_reset_requested_at"] = datetime.now(timezone.utc).isoformat()
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="portfolio_update",
+            source="control",
+            strategy_id="system",
+            payload={
+                "equity": 0.0,
+                "total_pnl": 0.0,
+                "cash": 0.0,
+                "position_size": 0.0,
+                "drawdown": 0.0,
+                "reason": "portfolio reset requested",
+            },
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
+@app.websocket("/ws/events")
+async def ws_events(ws: WebSocket) -> None:
+    await ws.accept()
+    queue = ENGINE.subscribe()
+    try:
+        while True:
+            event = await queue.get()
+            await ws.send_json(event.model_dump())
+    except WebSocketDisconnect:
+        ENGINE.unsubscribe(queue)
+
+
+@app.websocket("/ws/decisions")
+async def ws_decisions(ws: WebSocket) -> None:
+    await ws.accept()
+    try:
+        while True:
+            await ws.send_json(_snapshot())
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        return

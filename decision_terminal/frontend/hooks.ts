@@ -162,7 +162,17 @@ export function useDecisionStream() {
       if (!response.ok) {
         throw new Error(`Control request failed: ${response.status}`);
       }
-      return response.json();
+      const json = (await response.json()) as { control?: DecisionPayload["meta"]["controls"] };
+      if (json.control) {
+        setPayload((prev) => ({
+          ...prev,
+          meta: {
+            ...prev.meta,
+            controls: json.control ?? prev.meta.controls,
+          },
+        }));
+      }
+      return json;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Control request failed";
       setControlError(message);

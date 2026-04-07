@@ -13,7 +13,7 @@ class TestExecutionPortfolio(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "portfolio_test.db")
             portfolio = Portfolio(db_path=db_path, initial_cash=10000.0, fee_rate=0.001)
-            engine = ExecutionEngine(portfolio=portfolio, paper_mode=True)
+            engine = ExecutionEngine(portfolio=portfolio, paper_mode=True, realistic_simulation=False)
 
             now = datetime.now(timezone.utc).isoformat()
 

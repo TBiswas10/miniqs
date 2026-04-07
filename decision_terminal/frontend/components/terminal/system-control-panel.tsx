@@ -40,16 +40,16 @@ export function SystemControlPanel({
           <button
             className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${controls.trading_enabled ? "border-terminal-buy text-terminal-buy" : "border-terminal-border text-terminal-muted"}`}
             onClick={() => void setTradingEnabled(true)}
-            title="Start trading"
+            title="Resume trading"
           >
-            Start
+            Resume
           </button>
           <button
             className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${!controls.trading_enabled ? "border-terminal-blocked text-terminal-blocked" : "border-terminal-border text-terminal-muted"}`}
             onClick={() => void setTradingEnabled(false)}
-            title="Stop trading"
+            title="Pause trading"
           >
-            Stop
+            Pause
           </button>
           <button
             className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${controls.kill_switch ? "border-terminal-sell bg-terminal-sell/20 text-terminal-sell" : "border-terminal-border text-terminal-muted"}`}

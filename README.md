@@ -131,6 +131,39 @@ Health endpoint:
 python main.py
 ```
 
+### Event-driven async session
+
+```powershell
+python event_driven_pipeline.py
+```
+
+Event-driven flow is implemented as decoupled async workers connected by queues:
+
+- market data ingestion
+- strategy evaluation
+- risk check
+- execution
+
+This prevents a slow stage from blocking the full trading loop.
+
+### Realistic execution simulation
+
+Backtests and simulated paper sessions now use an order-state machine and realistic fill model.
+
+Order state path supports:
+
+- created -> submitted -> acknowledged -> partial -> filled
+- created -> submitted -> acknowledged -> partial -> canceled
+- created -> submitted -> acknowledged -> rejected
+
+Execution realism includes:
+
+- spread crossing
+- slippage
+- size-based market impact
+- partial fills and remainder cancellation
+- transaction fees via portfolio accounting
+
 ### Backtest quick example
 
 ```powershell

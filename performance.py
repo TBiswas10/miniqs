@@ -53,13 +53,18 @@ class PerformanceTracker:
 			if not values:
 				continue
 			wins = sum(1 for p in values if p > 0)
-			win_rate = wins / len(values)
+			hit_rate = wins / len(values)
 			avg_trade_pnl = mean(values)
 			max_dd = self._max_drawdown_from_returns(values)
+			std = pstdev(values) if len(values) > 1 else 0.0
+			sharpe = (avg_trade_pnl / std) if std > 0 else 0.0
 			metrics[strategy] = {
-				"win_rate": float(win_rate),
+				"win_rate": float(hit_rate),
+				"hit_rate": float(hit_rate),
 				"avg_trade_pnl": float(avg_trade_pnl),
 				"max_drawdown": float(max_dd),
+				"sharpe_ratio": float(sharpe),
+				"trade_count": float(len(values)),
 			}
 		return metrics
 
