@@ -1,0 +1,2 @@
+timestamp,num_ticks,pipeline_total_pnl,pipeline_sharpe_ratio,pipeline_max_drawdown,pipeline_win_rate,pipeline_trade_count,naive_mr_total_pnl,pure_mom_total_pnl
+2026-04-07T02:07:43.285717+00:00,500,18.13948926,0.03327504275288289,0.00018167319822656253,0.43548387096774194,62,-15.727124478807596,15.727124478807596

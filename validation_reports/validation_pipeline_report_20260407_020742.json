@@ -1,0 +1,409 @@
+{
+  "backtest": [
+    {
+      "timestamp": "2026-04-07T02:07:43.285717+00:00",
+      "num_ticks": 500,
+      "pipeline_metrics": {
+        "total_pnl": 18.13948926,
+        "win_rate": 0.43548387,
+        "avg_trade_pnl": 0.5680072,
+        "max_drawdown": 0.00018167,
+        "sharpe_ratio": 0.03327504,
+        "trade_count": 62.0
+      },
+      "baseline_naive_mean_reversion": {
+        "total_pnl": -15.72712448,
+        "win_rate": 0.46893788,
+        "avg_trade_pnl": -0.03151728,
+        "max_drawdown": 25.84864634,
+        "sharpe_ratio": -0.05536126
+      },
+      "baseline_pure_momentum": {
+        "total_pnl": 15.72712448,
+        "win_rate": 0.53106212,
+        "avg_trade_pnl": 0.03151728,
+        "max_drawdown": 8.63331169,
+        "sharpe_ratio": 0.05536126
+      },
+      "config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.003,
+        "mom_threshold": 0.002,
+        "confidence_threshold": 0.6,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      }
+    }
+  ],
+  "walk_forward": [
+    {
+      "wf_index": 0,
+      "train_ticks": 100,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.00285,
+        "mom_threshold": 0.0019,
+        "confidence_threshold": 0.58,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 0.0
+      },
+      "timestamp": "2026-04-07T02:07:45.036390+00:00"
+    },
+    {
+      "wf_index": 50,
+      "train_ticks": 150,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.0027075,
+        "mom_threshold": 0.001805,
+        "confidence_threshold": 0.56,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 0.0
+      },
+      "timestamp": "2026-04-07T02:07:47.974709+00:00"
+    },
+    {
+      "wf_index": 100,
+      "train_ticks": 200,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.00257212,
+        "mom_threshold": 0.00171475,
+        "confidence_threshold": 0.54,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": -0.11616439,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 1.0
+      },
+      "timestamp": "2026-04-07T02:07:51.901406+00:00"
+    },
+    {
+      "wf_index": 150,
+      "train_ticks": 250,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.00257212,
+        "mom_threshold": 0.00162901,
+        "confidence_threshold": 0.52,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": -0.1165681,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 1.0
+      },
+      "timestamp": "2026-04-07T02:07:57.296356+00:00"
+    },
+    {
+      "wf_index": 200,
+      "train_ticks": 300,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.00257212,
+        "mom_threshold": 0.00154756,
+        "confidence_threshold": 0.5,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 0.0
+      },
+      "timestamp": "2026-04-07T02:08:04.305938+00:00"
+    },
+    {
+      "wf_index": 250,
+      "train_ticks": 350,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.00257212,
+        "mom_threshold": 0.00147018,
+        "confidence_threshold": 0.48,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 0.0
+      },
+      "timestamp": "2026-04-07T02:08:13.361320+00:00"
+    },
+    {
+      "wf_index": 300,
+      "train_ticks": 400,
+      "test_ticks": 50,
+      "optimized_config": {
+        "initial_cash": 100000.0,
+        "ma_window": 20,
+        "long_ma_window": 50,
+        "vol_window": 20,
+        "momentum_window": 10,
+        "mr_threshold": 0.00244352,
+        "mom_threshold": 0.00139667,
+        "confidence_threshold": 0.46,
+        "trade_size": 1.0,
+        "max_position_size": 5.0,
+        "cooldown_seconds": 5,
+        "max_loss_per_session": 500.0
+      },
+      "test_metrics": {
+        "total_pnl": -0.11842726,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 1.0
+      },
+      "timestamp": "2026-04-07T02:08:23.745661+00:00"
+    }
+  ],
+  "stress_testing": [
+    {
+      "scenario": "spike_up_5pct",
+      "metrics": {
+        "total_pnl": 0.0,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "trade_count": 0.0
+      },
+      "risk_blocks": 0,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:23.773965+00:00"
+    },
+    {
+      "scenario": "spike_down_5pct",
+      "metrics": {
+        "total_pnl": -1.21005,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 1.21e-05,
+        "sharpe_ratio": -0.56599145,
+        "trade_count": 4.0
+      },
+      "risk_blocks": 15,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:23.831116+00:00"
+    },
+    {
+      "scenario": "high_volatility_2x",
+      "metrics": {
+        "total_pnl": 7.45483784,
+        "win_rate": 0.5,
+        "avg_trade_pnl": 1.34266214,
+        "max_drawdown": 2.65e-05,
+        "sharpe_ratio": 0.16137606,
+        "trade_count": 6.0
+      },
+      "risk_blocks": 16,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:23.892620+00:00"
+    },
+    {
+      "scenario": "high_volatility_3x",
+      "metrics": {
+        "total_pnl": 11.44694204,
+        "win_rate": 0.5,
+        "avg_trade_pnl": 2.00790932,
+        "max_drawdown": 3.855e-05,
+        "sharpe_ratio": 0.16662774,
+        "trade_count": 6.0
+      },
+      "risk_blocks": 16,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:23.954350+00:00"
+    },
+    {
+      "scenario": "downtrend_20pct",
+      "metrics": {
+        "total_pnl": -41.39865221,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.00041399,
+        "sharpe_ratio": -0.48550376,
+        "trade_count": 5.0
+      },
+      "risk_blocks": 46,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:24.011116+00:00"
+    },
+    {
+      "scenario": "downtrend_10pct",
+      "metrics": {
+        "total_pnl": -21.22642999,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 0.00021338,
+        "sharpe_ratio": -0.28133369,
+        "trade_count": 5.0
+      },
+      "risk_blocks": 46,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:24.067982+00:00"
+    },
+    {
+      "scenario": "low_liquidity_2pct_spread",
+      "metrics": {
+        "total_pnl": 0.10639233,
+        "win_rate": 0.44444444,
+        "avg_trade_pnl": 0.18266523,
+        "max_drawdown": 2.927e-05,
+        "sharpe_ratio": 0.00341399,
+        "trade_count": 9.0
+      },
+      "risk_blocks": 18,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:24.147888+00:00"
+    },
+    {
+      "scenario": "low_liquidity_4pct_spread",
+      "metrics": {
+        "total_pnl": 2.8148598,
+        "win_rate": 0.3,
+        "avg_trade_pnl": 0.40437057,
+        "max_drawdown": 0.00011727,
+        "sharpe_ratio": 0.01649887,
+        "trade_count": 10.0
+      },
+      "risk_blocks": 21,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:24.228087+00:00"
+    },
+    {
+      "scenario": "recovery_after_shock",
+      "metrics": {
+        "total_pnl": -7.03505643,
+        "win_rate": 0.1,
+        "avg_trade_pnl": 0.07961259,
+        "max_drawdown": 0.00023543,
+        "sharpe_ratio": -0.02645302,
+        "trade_count": 10.0
+      },
+      "risk_blocks": 41,
+      "system_stable": true,
+      "timestamp": "2026-04-07T02:08:24.312019+00:00"
+    }
+  ],
+  "live_paper": [
+    {
+      "timestamp": "2026-04-07T02:08:24.375406+00:00",
+      "duration_seconds": 100,
+      "num_ticks": 200,
+      "signals_generated": 89,
+      "trades_executed": 1,
+      "trades_blocked": 88,
+      "metrics": {
+        "total_pnl": -1.2574201,
+        "win_rate": 0.0,
+        "avg_trade_pnl": 0.0,
+        "max_drawdown": 2.849e-05,
+        "sharpe_ratio": -0.06504628,
+        "trade_count": 1.0
+      },
+      "final_portfolio_state": {
+        "cash": 99899.9799799,
+        "position_size": 1.0,
+        "avg_entry_price": 99.9201,
+        "fees_paid": 0.0999201,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": -1.1575,
+        "total_pnl": -1.2574201,
+        "equity": 99998.7425799
+      },
+      "trades": [
+        {
+          "tick": 52,
+          "action": "buy",
+          "price": 99.9201,
+          "strategy": "mean_reversion",
+          "confidence": 1.0,
+          "pnl": 0.0,
+          "timestamp": "2026-04-07T02:08:24.319395+00:00"
+        }
+      ]
+    }
+  ]
+}

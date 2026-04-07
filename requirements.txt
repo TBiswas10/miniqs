@@ -1,0 +1,7 @@
+# Core (existing mini quant stack)
+numpy>=1.24
+pandas>=2.0
+
+# Alpaca paper trading + WebSockets
+websockets>=12.0
+msgpack>=1.0.0

@@ -1,0 +1,2 @@
+timestamp,duration_seconds,num_ticks,signals_generated,trades_executed,trades_blocked,total_pnl,sharpe_ratio,max_drawdown,win_rate
+2026-04-07T02:08:24.375406+00:00,100,200,89,1,88,-1.2574201,-0.06504628243008437,2.848660746029782e-05,0.0
