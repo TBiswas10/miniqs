@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from collections import deque
 from typing import AsyncIterator, Callable, Deque, Dict, Optional, Set
 
@@ -28,7 +29,7 @@ def parse_alpaca_timestamp(raw: str) -> datetime:
         ts = ts.tz_localize("UTC")
     else:
         ts = ts.tz_convert("UTC")
-    return ts.to_pydatetime()
+    return ts.floor("us").to_pydatetime()
 
 
 def dedupe_key_for_message(obj: Dict[str, object]) -> Optional[str]:

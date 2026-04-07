@@ -8,12 +8,25 @@ REST orders use ``https://paper-api.alpaca.markets`` — paper only.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+# Auto-load local `.env` for convenience.
+# This keeps the rest of the codebase focused on reading from `os.environ`.
+try:  # pragma: no cover
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv(dotenv_path=Path(".env"), override=False)
+except Exception:
+    # If python-dotenv isn't installed (or no .env exists), we just fall back
+    # to normal environment-variable behavior.
+    pass
 
 
 @dataclass
@@ -37,6 +50,8 @@ class AlpacaConfig:
     # WebSocket reconnect backoff (seconds)
     reconnect_initial_seconds: float = 1.0
     reconnect_max_seconds: float = 60.0
+    # Periodic console/log confirmation for the live runner
+    status_heartbeat_ticks: int = 50
     # Session limits (passed through to risk_manager)
     max_position_size: float = 5.0
     cooldown_seconds: int = 5
@@ -85,5 +100,7 @@ class AlpacaConfig:
             trading_ws_url=trading_ws,
             symbols=sym_list,
             min_tick_interval_seconds=float(_env("ALPACA_MIN_TICK_INTERVAL", "0.15") or "0.15"),
+            status_heartbeat_ticks=int(_env("ALPACA_STATUS_HEARTBEAT_TICKS", "50") or "50"),
+            trade_size=float(_env("ALPACA_TRADE_SIZE", "1.0") or "1.0"),
             max_ticks=max_ticks,
         )

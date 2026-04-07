@@ -5,7 +5,7 @@ Generated: April 7, 2026
 Status: ✅ PRODUCTION-READY FOR PAPER TRADING
 ===============================================================================
 
-PROJECT EXECUTION SUMMARY
+PROJECT EXECUTION SUMMARY python alpaca_paper_runner.py
 ========================
 
 Your Mini Quant System has successfully completed a comprehensive validation 
