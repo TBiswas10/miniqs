@@ -177,12 +177,13 @@ def _select_signal(
     Keeping selection defaults centralized reduces merge friction when strategy
     tuning changes across branches.
     """
-    return evaluate_signals_v2(
+    chosen, telemetry = evaluate_signals_v2(
         list(signals.values()),
         confidence_threshold=confidence_threshold,
         profile=profile,
         strategy_normalization=strategy_normalization,
         dominance_cap=dominance_cap,
+        return_telemetry=True,
     )
     return chosen, telemetry
 
@@ -338,7 +339,7 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         for name, signal in signals.items()
     }
 
-    chosen = _select_signal(
+    chosen, evaluator_telemetry = _select_signal(
         signals=signals,
         confidence_threshold=dynamic_conf_threshold,
         profile=runtime.cfg.evaluation_profile,
