@@ -53,6 +53,12 @@ DASHBOARD_CSV_FIELDS = [
 ]
 
 DEFAULT_DYNAMIC_RISK = RiskConfig()
+DEFAULT_STRATEGY_NORMALIZATION: Dict[str, float] = {
+    "mean_reversion": 1.0,
+    "momentum": 1.0,
+    "volatility_breakout": 1.0,
+}
+DEFAULT_DOMINANCE_CAP: float = 0.65
 
 
 def _strategy_registry() -> StrategyRegistry:
@@ -178,6 +184,7 @@ def _select_signal(
         strategy_normalization=strategy_normalization,
         dominance_cap=dominance_cap,
     )
+    return chosen, telemetry
 
 
 @dataclass
@@ -352,6 +359,7 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
                 "signals": signal_payload,
                 "decision": "hold",
                 "chosen": None,
+                "evaluator": evaluator_telemetry,
                 "risk": None,
                 "detail": no_signal_reason,
             },
@@ -386,6 +394,7 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
                     "confidence": chosen.confidence,
                     "reason": chosen.reason,
                 },
+                "evaluator": evaluator_telemetry,
                 "risk": {"allowed": False, "reason": reason},
                 "detail": reason,
             },
@@ -446,6 +455,7 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
                 "confidence": chosen.confidence,
                 "reason": chosen.reason,
             },
+            "evaluator": evaluator_telemetry,
             "signal_trace": signal_trace,
             "state": state,
             "metrics": metrics,
@@ -462,6 +472,7 @@ def _on_signal_event(event: SignalEvent, bus: EventBus, runtime: AlpacaRuntime) 
         base_trace = meta.get("base_trace", {}) if isinstance(meta.get("base_trace"), dict) else {}
         signal_payload = meta.get("signal_payload", {}) if isinstance(meta.get("signal_payload"), dict) else {}
         chosen = meta.get("chosen", {}) if isinstance(meta.get("chosen"), dict) else {}
+        evaluator = meta.get("evaluator", {}) if isinstance(meta.get("evaluator"), dict) else {}
         _write_brain_trace(
             runtime.cfg,
             {
@@ -469,6 +480,7 @@ def _on_signal_event(event: SignalEvent, bus: EventBus, runtime: AlpacaRuntime) 
                 "stage": stage,
                 "signals": signal_payload,
                 "chosen": chosen,
+                "evaluator": evaluator,
                 "risk": {"allowed": False, "reason": risk_reason},
                 "trade": event.trade,
             },
@@ -503,6 +515,7 @@ def _on_order_event(event: OrderEvent, bus: EventBus, runtime: AlpacaRuntime) ->
         base_trace = meta.get("base_trace", {}) if isinstance(meta, dict) and isinstance(meta.get("base_trace"), dict) else {}
         signal_payload = meta.get("signal_payload", {}) if isinstance(meta, dict) and isinstance(meta.get("signal_payload"), dict) else {}
         chosen = meta.get("chosen", {}) if isinstance(meta, dict) and isinstance(meta.get("chosen"), dict) else {}
+        evaluator = meta.get("evaluator", {}) if isinstance(meta, dict) and isinstance(meta.get("evaluator"), dict) else {}
         _write_brain_trace(
             runtime.cfg,
             {
@@ -510,6 +523,7 @@ def _on_order_event(event: OrderEvent, bus: EventBus, runtime: AlpacaRuntime) ->
                 "stage": "trade_submission_failed",
                 "signals": signal_payload,
                 "chosen": chosen,
+                "evaluator": evaluator,
                 "risk": {"allowed": True, "reason": event.reason},
                 "trade": trade,
                 "error": str(exc),
@@ -537,6 +551,7 @@ def _on_fill_event(event: FillEvent, bus: EventBus, runtime: AlpacaRuntime) -> N
     base_trace = meta.get("base_trace", {}) if isinstance(meta.get("base_trace"), dict) else {}
     signal_payload = meta.get("signal_payload", {}) if isinstance(meta.get("signal_payload"), dict) else {}
     chosen = meta.get("chosen", {}) if isinstance(meta.get("chosen"), dict) else {}
+    evaluator = meta.get("evaluator", {}) if isinstance(meta.get("evaluator"), dict) else {}
     _write_brain_trace(
         runtime.cfg,
         {
@@ -544,6 +559,7 @@ def _on_fill_event(event: FillEvent, bus: EventBus, runtime: AlpacaRuntime) -> N
             "stage": "trade_executed",
             "signals": signal_payload,
             "chosen": chosen,
+            "evaluator": evaluator,
             "risk": {"allowed": True, "reason": "allowed"},
             "executed_trades": runtime.executed_trades,
             "executed_trades_before": max(0, runtime.executed_trades - 1),

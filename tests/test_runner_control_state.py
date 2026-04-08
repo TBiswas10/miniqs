@@ -102,6 +102,84 @@ class TestRunnerControlState(unittest.TestCase):
         stopped_rows = [r for r in traces if r.get("stage") == "trading_stopped"]
         self.assertTrue(stopped_rows)
         self.assertEqual(stopped_rows[0].get("detail"), "trading_disabled")
+        evaluator = stopped_rows[0].get("evaluator", {})
+        self.assertIsInstance(evaluator, dict)
+        self.assertIn("buy_score", evaluator)
+        self.assertIn("sell_score", evaluator)
+        self.assertIn("normalized_contributions", evaluator)
+        chosen = stopped_rows[0].get("chosen", {})
+        self.assertEqual(chosen.get("action"), "buy")
+        self.assertGreaterEqual(float(evaluator.get("buy_score", 0.0)), float(evaluator.get("sell_score", 0.0)))
+
+    def test_no_signal_row_includes_evaluator_telemetry(self) -> None:
+        traces = []
+
+        class FakeExecutionEngine:
+            def __init__(self, *args, **kwargs):
+                self.calls = 0
+
+            def execute_trade(self, trade):
+                self.calls += 1
+                return {
+                    "action": trade["action"],
+                    "size": trade["size"],
+                    "price": trade["price"],
+                    "timestamp": trade["timestamp"],
+                    "alpaca_order_id": "test-order-id",
+                    "realized_pnl_trade": 0.0,
+                }
+
+        control_state = {
+            "trading_enabled": True,
+            "kill_switch": False,
+            "strategies": {"mean_reversion": True, "momentum": True, "volatility_breakout": True},
+            "risk": {
+                "confidence_threshold": 0.95,
+            },
+        }
+
+        cfg = AlpacaConfig(
+            api_key_id="key",
+            api_secret_key="secret",
+            symbols=["SPY"],
+            sync_initial_cash_from_alpaca=False,
+            db_dir=tempfile.mkdtemp(prefix="runner_control_test_no_signal_"),
+            status_heartbeat_ticks=0,
+        )
+
+        with patch("alpaca_paper_runner._feature_engines", return_value={"SPY": _StubFeatureEngine()}), patch(
+            "alpaca_paper_runner.stream_alpaca_ticks",
+            side_effect=lambda *_args, **_kwargs: _single_tick_stream(cfg, _kwargs.get("on_connection_event")),
+        ), patch("alpaca_paper_runner.run_trading_stream_listener", side_effect=_noop_trading_listener), patch(
+            "alpaca_paper_runner.mean_reversion_signal",
+            return_value=StrategySignal("mean_reversion", "buy", 0.4, "test_signal"),
+        ), patch(
+            "alpaca_paper_runner.momentum_signal",
+            return_value=StrategySignal("momentum", "sell", 0.3, "test_signal"),
+        ), patch(
+            "alpaca_paper_runner.volatility_breakout_signal",
+            return_value=StrategySignal("volatility_breakout", "buy", 0.25, "test_signal"),
+        ), patch("alpaca_paper_runner.load_control_state", return_value=control_state), patch(
+            "alpaca_paper_runner.AlpacaPaperExecutionEngine", new=FakeExecutionEngine
+        ), patch("alpaca_paper_runner._write_dashboard", return_value=None), patch(
+            "alpaca_paper_runner._emit_heartbeat", return_value=None
+        ), patch(
+            "alpaca_paper_runner._write_brain_trace", side_effect=lambda _cfg, row: traces.append(row)
+        ):
+            summary = asyncio.run(runner.run_alpaca_paper_session(cfg))
+
+        self.assertEqual(summary["executed_trades"], 0.0)
+        no_signal_rows = [r for r in traces if r.get("stage") == "no_signal"]
+        self.assertTrue(no_signal_rows)
+        row = no_signal_rows[0]
+        self.assertIsNone(row.get("chosen"))
+        evaluator = row.get("evaluator", {})
+        self.assertIsInstance(evaluator, dict)
+        self.assertIn("buy_score", evaluator)
+        self.assertIn("sell_score", evaluator)
+        self.assertIn("normalized_contributions", evaluator)
+        self.assertIn("applied_threshold", evaluator)
+        self.assertIn("applied_profile", evaluator)
 
 
 if __name__ == "__main__":
