@@ -43,10 +43,15 @@ class TestDecisionTerminalEventEngine(unittest.TestCase):
 
         events = engine._map_trace_row(row)
         self.assertTrue(events)
+
         signal_event = next(event for event in events if event.event_type == "strategy_signal")
+        portfolio_event = next(event for event in events if event.event_type == "portfolio_update")
+
         self.assertEqual(signal_event.payload.get("side"), "HOLD")
         self.assertEqual(signal_event.payload.get("strategy"), "momentum")
         self.assertAlmostEqual(float(signal_event.payload.get("confidence", 0.0)), 0.29816, places=6)
+        self.assertEqual(signal_event.strategy_id, "momentum")
+        self.assertEqual(portfolio_event.strategy_id, "none")
 
     def test_chosen_signal_takes_priority_when_present(self) -> None:
         engine = self._engine()
@@ -62,9 +67,31 @@ class TestDecisionTerminalEventEngine(unittest.TestCase):
 
         events = engine._map_trace_row(row)
         signal_event = next(event for event in events if event.event_type == "strategy_signal")
+
         self.assertEqual(signal_event.payload.get("side"), "BUY")
         self.assertEqual(signal_event.payload.get("strategy"), "mean_reversion")
         self.assertAlmostEqual(float(signal_event.payload.get("confidence", 0.0)), 0.64, places=6)
+
+    def test_no_signal_risk_event_keeps_none_strategy(self) -> None:
+        engine = self._engine()
+        row = {
+            "kind": "decision",
+            "timestamp": "2026-04-08T04:43:52.997231+00:00",
+            "symbol": "BTC/USD",
+            "stage": "no_signal",
+            "signals": {
+                "mean_reversion": {"action": "hold", "confidence": 0.0, "reason": "volatility filter"},
+                "momentum": {"action": "hold", "confidence": 0.29816, "reason": "trend mismatch"},
+            },
+            "chosen": None,
+            "risk": {"allowed": False, "reason": "risk blocked"},
+            "detail": "confidence_below_threshold",
+        }
+
+        events = engine._map_trace_row(row)
+        risk_event = next(event for event in events if event.event_type == "risk_event")
+
+        self.assertEqual(risk_event.strategy_id, "none")
 
 
 if __name__ == "__main__":

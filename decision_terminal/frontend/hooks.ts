@@ -6,7 +6,7 @@ import { API_BASE, WS_BASE } from "@/lib/config";
 
 const fallback: DecisionPayload = {
   decision: {
-    signal: { side: "HOLD", confidence: 0, strategy: "none", reason: "Waiting for stream", timestamp: "--", trend: [] },
+    signal: { side: "HOLD", confidence: 0, strategy: "pending", reason: "Waiting for stream", timestamp: "--", trend: [] },
     checks: [],
     decision: { action: "HOLD", stage: "idle", reason: "Waiting for stream", pipeline: { signal: "idle", decision: "idle", sent: "idle", filled: "idle" } },
     position: { symbol: "BTC/USD", size: 0, price: 0 },
@@ -42,6 +42,21 @@ const fallback: DecisionPayload = {
   performance: { win_rate: 0, avg_profit: 0, max_drawdown: 0, sharpe_approx: 0, equity_curve: [] },
   replay: { cursor: 0, length: 0, timeline: [] },
   alerts: [],
+  risk_state: {
+    halted: false,
+    kill_switch: false,
+    trading_enabled: true,
+    confidence_threshold: 0.6,
+    max_position_size: 0.1,
+    daily_loss_limit: 500,
+    risk_per_trade: 0.01,
+    max_exposure: 1,
+    cooldown_seconds: 5,
+    portfolio_drawdown_limit: 0.12,
+    latest_risk_type: "",
+    latest_risk_reason: "",
+    latest_risk_severity: "info",
+  },
 };
 
 export function useDecisionStream() {

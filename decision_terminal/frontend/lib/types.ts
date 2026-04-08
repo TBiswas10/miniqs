@@ -96,6 +96,21 @@ export type DecisionPayload = {
       missing_strategy_controls: string[];
     };
   };
+  risk_state: {
+    halted: boolean;
+    kill_switch: boolean;
+    trading_enabled: boolean;
+    confidence_threshold: number;
+    max_position_size: number;
+    daily_loss_limit: number;
+    risk_per_trade: number;
+    max_exposure: number;
+    cooldown_seconds: number;
+    portfolio_drawdown_limit: number;
+    latest_risk_type: string;
+    latest_risk_reason: string;
+    latest_risk_severity: string;
+  };
   thought_stream: Array<{
     ts: string;
     level: "info" | "warn" | "error";

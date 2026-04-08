@@ -102,7 +102,7 @@ def _build_history(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for sig in signal_events[-80:]:
         ts = sig["ts"]
         side = str(sig["payload"].get("side", "HOLD")).upper()
-        strategy = str(sig.get("strategy_id") or sig["payload"].get("strategy", "none"))
+        strategy = str(sig.get("strategy_id") or sig["payload"].get("strategy", "pending"))
         blocked = any(
             r["payload"].get("risk_type") == "trade_block" and str(r.get("strategy_id")) == strategy and abs((datetime.fromisoformat(r["ts"]) - datetime.fromisoformat(ts)).total_seconds()) <= 1.5
             for r in risk_events[-60:]
@@ -269,7 +269,7 @@ def _snapshot() -> Dict[str, Any]:
             "signal": {
                 "side": signal_side,
                 "confidence": float(latest_signal.get("confidence", 0.0)),
-                "strategy": str(latest_signal.get("strategy", "none")),
+                "strategy": str(latest_signal.get("strategy", "pending")),
                 "reason": str(latest_signal.get("reason", "waiting for stream")),
                 "timestamp": current_ts,
                 "trend": [

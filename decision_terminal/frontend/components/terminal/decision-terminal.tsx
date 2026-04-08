@@ -517,6 +517,7 @@ export function DecisionTerminal() {
           alerts={payload.alerts}
           recentRiskFailures={recentRiskFailures}
           killSwitch={payload.meta.controls.kill_switch}
+          riskState={payload.risk_state}
           fmt={fmt}
         />
       </section>

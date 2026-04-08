@@ -157,12 +157,14 @@ class EventEngine:
         if kind == "decision":
             chosen = row.get("chosen") if isinstance(row.get("chosen"), dict) else {}
             risk = row.get("risk") if isinstance(row.get("risk"), dict) else {}
-            strategy = str(chosen.get("strategy") or "none")
+            chosen_strategy = str(chosen.get("strategy") or "none")
             side = str(chosen.get("action") or "HOLD").upper()
-            confidence = float(chosen.get("confidence") or 0.0)
+            chosen_confidence = float(chosen.get("confidence") or 0.0)
+            signal_strategy = chosen_strategy
+            signal_confidence = chosen_confidence
             if not chosen:
                 signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
-                strongest_name = "none"
+                strongest_name = "pending"
                 strongest_conf = 0.0
                 for name, payload in signals.items():
                     if not isinstance(payload, dict):
@@ -171,8 +173,8 @@ class EventEngine:
                     if candidate > strongest_conf:
                         strongest_conf = candidate
                         strongest_name = str(name)
-                strategy = strongest_name
-                confidence = strongest_conf
+                signal_strategy = strongest_name
+                signal_confidence = strongest_conf
             reason = str(chosen.get("reason") or row.get("detail") or "")
             events.append(
                 EventMessage(
@@ -207,7 +209,7 @@ class EventEngine:
                     event_type="portfolio_update",
                     ts=ts,
                     source="trace",
-                    strategy_id=strategy,
+                    strategy_id=chosen_strategy,
                     symbol=symbol,
                     session_id=self._session_id,
                     payload={
@@ -227,7 +229,7 @@ class EventEngine:
                         event_type="risk_event",
                         ts=ts,
                         source="trace",
-                        strategy_id=strategy,
+                        strategy_id=chosen_strategy,
                         symbol=symbol,
                         session_id=self._session_id,
                         payload={
