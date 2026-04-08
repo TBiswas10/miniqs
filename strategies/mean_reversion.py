@@ -20,6 +20,9 @@ def generate_signal(
     entry_threshold: float = 0.003,
     max_trend_momentum: float = 0.004,
     max_volatility: float = 0.03,
+    max_spread: float = 0.0015,
+    min_order_imbalance: float = -0.2,
+    max_order_imbalance: float = 0.2,
 ) -> StrategySignal:
     """Generate mean-reversion signal with simple regime gating.
 
@@ -53,6 +56,24 @@ def generate_signal(
             action="hold",
             confidence=0.0,
             reason=f"volatility filter active vol={features.rolling_volatility:.4f}",
+        )
+
+    spread = float(getattr(features, "spread", 0.0))
+    if spread > max(max_spread, 0.0):
+        return StrategySignal(
+            strategy="mean_reversion",
+            action="hold",
+            confidence=0.0,
+            reason=f"spread filter active spread={spread:.4%}",
+        )
+
+    order_imbalance = float(getattr(features, "order_imbalance", 0.0))
+    if order_imbalance < min_order_imbalance or order_imbalance > max_order_imbalance:
+        return StrategySignal(
+            strategy="mean_reversion",
+            action="hold",
+            confidence=0.0,
+            reason=f"imbalance filter active imbalance={order_imbalance:.4f}",
         )
 
     if deviation >= entry_threshold:
@@ -89,4 +110,7 @@ class MeanReversionStrategy:
             entry_threshold=float(params.get("entry_threshold", 0.003)),
             max_trend_momentum=float(params.get("max_trend_momentum", 0.004)),
             max_volatility=float(params.get("max_volatility", 0.03)),
+            max_spread=float(params.get("max_spread", 0.0015)),
+            min_order_imbalance=float(params.get("min_order_imbalance", -0.2)),
+            max_order_imbalance=float(params.get("max_order_imbalance", 0.2)),
         )
