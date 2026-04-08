@@ -1,0 +1,14 @@
+{
+  "dataset_name": "backtest",
+  "version_id": "20260407_234543_4692e1ca",
+  "created_at": "2026-04-07T23:45:43.902712+00:00",
+  "metadata": {
+    "mode": "backtest",
+    "num_prices": 100,
+    "config": {
+      "confidence_threshold": 0.58,
+      "mr_threshold": 0.003,
+      "mom_threshold": 0.002
+    }
+  }
+}

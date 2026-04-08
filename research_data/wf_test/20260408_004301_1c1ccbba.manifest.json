@@ -1,0 +1,16 @@
+{
+  "dataset_name": "wf_test",
+  "version_id": "20260408_004301_1c1ccbba",
+  "created_at": "2026-04-08T00:43:01.602486+00:00",
+  "metadata": {
+    "mode": "backtest",
+    "num_prices": 60,
+    "config": {
+      "confidence_threshold": 0.5399999999999999,
+      "mr_threshold": 0.0025721249999999998,
+      "mom_threshold": 0.00171475,
+      "persist_research": true,
+      "dataset_name": "wf_test"
+    }
+  }
+}
