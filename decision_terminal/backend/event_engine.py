@@ -160,19 +160,32 @@ class EventEngine:
             strategy = str(chosen.get("strategy") or "none")
             side = str(chosen.get("action") or "HOLD").upper()
             confidence = float(chosen.get("confidence") or 0.0)
+            if not chosen:
+                signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
+                strongest_name = "none"
+                strongest_conf = 0.0
+                for name, payload in signals.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    candidate = float(payload.get("confidence") or 0.0)
+                    if candidate > strongest_conf:
+                        strongest_conf = candidate
+                        strongest_name = str(name)
+                strategy = strongest_name
+                confidence = strongest_conf
             reason = str(chosen.get("reason") or row.get("detail") or "")
             events.append(
                 EventMessage(
                     event_type="strategy_signal",
                     ts=ts,
                     source="trace",
-                    strategy_id=strategy,
+                    strategy_id=signal_strategy,
                     symbol=symbol,
                     session_id=self._session_id,
                     payload={
-                        "strategy": strategy,
+                        "strategy": signal_strategy,
                         "side": side,
-                        "confidence": confidence,
+                        "confidence": signal_confidence,
                         "reason": reason,
                         "raw": row,
                     },
