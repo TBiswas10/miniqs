@@ -22,12 +22,12 @@
       "max_loss_per_session": 500.0,
       "max_position_size": 5.0,
       "cooldown_seconds": 5,
-      "confidence_threshold": 0.35
+      "confidence_threshold": 0.25
     },
     "strategy": {
-      "mr_threshold": 0.003,
-      "mom_threshold": 0.002,
-      "vb_breakout_factor": 1.2,
+      "mr_threshold": 0.0022,
+      "mom_threshold": 0.0014,
+      "vb_breakout_factor": 0.95,
       "feedback_trade_interval": 10
     },
     "execution": {
