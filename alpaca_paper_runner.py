@@ -165,22 +165,24 @@ def _write_brain_trace(cfg: AlpacaConfig, row: Dict[str, object]) -> None:
 
 
 def _select_signal(
+    *,
     signals: Dict[str, Any],
     confidence_threshold: float,
     profile: str,
-) -> tuple[Any, Dict[str, object]]:
+    strategy_normalization: Dict[str, float],
+    dominance_cap: float,
+) -> Any:
     """Resolve the final signal with ensemble evaluator defaults in one place.
 
     Keeping selection defaults centralized reduces merge friction when strategy
     tuning changes across branches.
     """
-    chosen, telemetry = evaluate_signals_v2(
+    return evaluate_signals_v2(
         list(signals.values()),
         confidence_threshold=confidence_threshold,
         profile=profile,
-        strategy_normalization=DEFAULT_STRATEGY_NORMALIZATION,
-        dominance_cap=DEFAULT_DOMINANCE_CAP,
-        return_telemetry=True,
+        strategy_normalization=strategy_normalization,
+        dominance_cap=dominance_cap,
     )
     return chosen, telemetry
 
@@ -336,10 +338,12 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         for name, signal in signals.items()
     }
 
-    chosen, evaluator_telemetry = _select_signal(
+    chosen = _select_signal(
         signals=signals,
         confidence_threshold=dynamic_conf_threshold,
         profile=runtime.cfg.evaluation_profile,
+        strategy_normalization=runtime.cfg.strategy_normalization,
+        dominance_cap=runtime.cfg.dominance_cap,
     )
     if chosen is None:
         stage = "no_signal"
