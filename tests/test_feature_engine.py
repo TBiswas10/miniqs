@@ -121,6 +121,26 @@ class TestFeatureEngine(unittest.TestCase):
         self.assertAlmostEqual(snapshot.trend_slope_long, expected_trend_slope_long, places=8)
         self.assertAlmostEqual(snapshot.distance_to_ma50, expected_distance_to_ma50, places=8)
 
+    def test_quote_microstructure_fields_reach_feature_input(self) -> None:
+        engine = FeatureEngine(ma_window=3, long_ma_window=3, vol_window=3, momentum_window=2, debug=False)
+        ticks = [
+            Tick(symbol="SPY", price=500.00, timestamp=datetime.now(timezone.utc), volume=20.0, message_type="q", bid_price=499.99, ask_price=500.01, bid_size=10.0, ask_size=10.0),
+            Tick(symbol="SPY", price=500.02, timestamp=datetime.now(timezone.utc), volume=20.0, message_type="q", bid_price=500.01, ask_price=500.03, bid_size=12.0, ask_size=8.0),
+            Tick(symbol="SPY", price=500.04, timestamp=datetime.now(timezone.utc), volume=22.0, message_type="q", bid_price=500.03, ask_price=500.05, bid_size=14.0, ask_size=8.0),
+        ]
+        for tick in ticks:
+            engine.update_features(tick)
+
+        latest_input = engine.get_latest_event_input()
+        self.assertIsNotNone(latest_input)
+        assert latest_input is not None
+        self.assertEqual(latest_input["message_type"], "q")
+        self.assertEqual(latest_input["bid_price"], 500.03)
+        self.assertEqual(latest_input["ask_price"], 500.05)
+        self.assertEqual(latest_input["bid_size"], 14.0)
+        self.assertEqual(latest_input["ask_size"], 8.0)
+        self.assertIn("mid_price", latest_input)
+
 
 if __name__ == "__main__":
     unittest.main()

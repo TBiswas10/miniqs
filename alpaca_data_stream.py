@@ -54,7 +54,7 @@ def dedupe_key_for_message(obj: Dict[str, object]) -> Optional[str]:
 
 
 def alpaca_message_to_tick(obj: Dict[str, object]) -> Optional[Tick]:
-    """Convert one Alpaca data payload to a Tick (mid for quotes, last for trades)."""
+    """Convert one Alpaca data payload to a Tick while retaining raw microstructure fields."""
     t = obj.get("T")
     sym = str(obj.get("S", "")).upper()
     if not sym:
@@ -69,21 +69,38 @@ def alpaca_message_to_tick(obj: Dict[str, object]) -> Optional[Tick]:
         a_s = float(obj.get("as", 0.0) or 0.0)
         vol = bs + a_s
         ts = parse_alpaca_timestamp(str(obj.get("t", "")))
-        return Tick(symbol=sym, price=round(price, 8), timestamp=ts, volume=vol)
+        return Tick(
+            symbol=sym,
+            price=round(price, 8),
+            timestamp=ts,
+            volume=vol,
+            message_type="q",
+            bid_price=bp,
+            ask_price=ap,
+            bid_size=bs,
+            ask_size=a_s,
+        )
     if t == "t":
         price = float(obj.get("p", 0.0) or 0.0)
         if price <= 0:
             return None
         vol = float(obj.get("s", 0.0) or 0.0)
         ts = parse_alpaca_timestamp(str(obj.get("t", "")))
-        return Tick(symbol=sym, price=round(price, 8), timestamp=ts, volume=vol)
+        return Tick(
+            symbol=sym,
+            price=round(price, 8),
+            timestamp=ts,
+            volume=vol,
+            message_type="t",
+            trade_size=vol,
+        )
     if t == "b":
         c = float(obj.get("c", 0.0) or 0.0)
         if c <= 0:
             return None
         vol = float(obj.get("v", 0.0) or 0.0)
         ts = parse_alpaca_timestamp(str(obj.get("t", "")))
-        return Tick(symbol=sym, price=round(c, 8), timestamp=ts, volume=vol)
+        return Tick(symbol=sym, price=round(c, 8), timestamp=ts, volume=vol, message_type="b")
     return None
 
 

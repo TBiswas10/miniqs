@@ -77,6 +77,7 @@ class FeatureEngine:
 		self._prices: Deque[float] = deque(maxlen=history_len)
 		self._volumes: Deque[float] = deque(maxlen=history_len)
 		self._latest_features: Optional[Dict[str, float]] = None
+		self._latest_event_input: Optional[Dict[str, object]] = None
 
 	def update_features(self, new_tick: Union[Tick, Dict[str, object]]) -> Optional[Dict[str, float]]:
 		"""Update feature state with a new tick and return latest feature vector.
@@ -184,6 +185,10 @@ class FeatureEngine:
 	def get_latest_features(self) -> Optional[Dict[str, float]]:
 		"""Return latest computed feature vector."""
 		return self._latest_features
+
+	def get_latest_event_input(self) -> Optional[Dict[str, object]]:
+		"""Return the latest raw event payload adapted for feature computation."""
+		return self._latest_event_input
 
 	def update(self, tick: Tick) -> Optional[FeatureSnapshot]:
 		"""Consume a tick and return features when enough history exists.
