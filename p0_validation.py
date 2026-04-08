@@ -58,11 +58,15 @@ def _check_summary(name: str, summary: Dict[str, float]) -> List[GateResult]:
             details=f"max_drawdown={summary.get('max_drawdown', 1.0)}",
         )
     )
-    w_sum = (
-        float(summary.get("mean_reversion_weight", 0.0))
-        + float(summary.get("momentum_weight", 0.0))
-        + float(summary.get("volatility_breakout_weight", 0.0))
-    )
+    strategy_weights = summary.get("strategy_weights", {})
+    if isinstance(strategy_weights, dict):
+        w_sum = sum(float(v) for v in strategy_weights.values())
+    else:
+        w_sum = (
+            float(summary.get("mean_reversion_weight", 0.0))
+            + float(summary.get("momentum_weight", 0.0))
+            + float(summary.get("volatility_breakout_weight", 0.0))
+        )
     checks.append(
         GateResult(
             name=f"{name}.weight_sum",
@@ -121,6 +125,10 @@ def main() -> int:
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     print(f"[p0_gate] status={report['status']} report={path}")
+    if report["status"] != "PASS":
+        failing = [check for check in report["checks"] if not check["passed"]]
+        for check in failing:
+            print(f"[p0_gate] fail {check['name']}: {check['details']}")
     return 0 if report["status"] == "PASS" else 1
 
 

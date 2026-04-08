@@ -1,7 +1,5 @@
 {
   "alpaca": {
-    "api_key_id": "",
-    "api_secret_key": "",
     "rest_base_url": "https://paper-api.alpaca.markets",
     "trading_ws_url": "wss://paper-api.alpaca.markets/stream",
     "symbols": ["SPY"],

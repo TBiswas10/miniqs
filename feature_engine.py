@@ -91,9 +91,11 @@ class FeatureEngine:
 		- returns None if history is insufficient
 		"""
 		if isinstance(new_tick, Tick):
+			self._latest_event_input = dict(new_tick.to_feature_payload())
 			price = float(new_tick.price)
 			volume = float(new_tick.volume)
 		else:
+			self._latest_event_input = dict(new_tick)
 			price = float(new_tick["mid_price"])
 			volume = float(new_tick.get("volume", 0.0))
 

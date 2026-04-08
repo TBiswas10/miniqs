@@ -34,7 +34,7 @@ from performance import PerformanceTracker
 from portfolio import Portfolio
 from risk_manager import RiskConfig, RiskEngine
 from strategies import StrategyRegistry, default_strategy_registry, generate_weighted_signals
-from strategy_evaluator import emit_signal_event, evaluate_signals_v2
+from strategy_evaluator import emit_signal_event, evaluate_signals, evaluate_signals_v2
 
 
 @dataclass

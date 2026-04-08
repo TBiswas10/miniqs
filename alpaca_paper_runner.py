@@ -34,7 +34,7 @@ from strategies import FunctionStrategy, StrategyRegistry, default_strategy_regi
 from strategies.mean_reversion import generate_signal as mean_reversion_signal  # backward-compatible test patch target
 from strategies.momentum import generate_signal as momentum_signal  # backward-compatible test patch target
 from strategies.volatility_breakout import generate_signal as volatility_breakout_signal  # backward-compatible test patch target
-from strategy_evaluator import emit_signal_event, evaluate_signals_v2
+from strategy_evaluator import emit_signal_event, evaluate_signals, evaluate_signals_v2
 from quant_control_state import load_control_state
 
 _log = logging.getLogger(__name__)
@@ -171,18 +171,19 @@ def _select_signal(
     profile: str,
     strategy_normalization: Dict[str, float],
     dominance_cap: float,
-) -> Any:
+) -> tuple[Any, Dict[str, Any]]:
     """Resolve the final signal with ensemble evaluator defaults in one place.
 
     Keeping selection defaults centralized reduces merge friction when strategy
     tuning changes across branches.
     """
-    return evaluate_signals_v2(
+    chosen, telemetry = evaluate_signals_v2(
         list(signals.values()),
         confidence_threshold=confidence_threshold,
         profile=profile,
         strategy_normalization=strategy_normalization,
         dominance_cap=dominance_cap,
+        return_telemetry=True,
     )
     return chosen, telemetry
 
@@ -338,7 +339,7 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         for name, signal in signals.items()
     }
 
-    chosen = _select_signal(
+    chosen, evaluator_telemetry = _select_signal(
         signals=signals,
         confidence_threshold=dynamic_conf_threshold,
         profile=runtime.cfg.evaluation_profile,

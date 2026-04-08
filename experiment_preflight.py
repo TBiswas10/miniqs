@@ -44,10 +44,13 @@ def main() -> int:
     p0 = run_p0_gate()
     if p0["status"] != "PASS":
         print("[preflight] blocked: P0 gate failed")
+        for check in p0.get("checks", []):
+            if not check.get("passed", False):
+                print(f"[preflight] fail {check.get('name')}: {check.get('details', '')}")
         return 1
 
     config_path = Path(os.environ.get("ALPACA_CONFIG_FILE", "config/alpaca_config.json"))
-    cfg = AlpacaConfig.from_file(config_path)
+    cfg = AlpacaConfig.from_env()
 
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
