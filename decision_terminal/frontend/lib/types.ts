@@ -19,6 +19,30 @@ type HistoryRow = {
   raw: Record<string, unknown>;
 };
 
+export type RiskControls = {
+  confidence_threshold: number;
+  max_position_size: number;
+  max_daily_loss: number;
+  risk_per_trade?: number;
+  daily_loss_limit?: number;
+  max_exposure?: number;
+  max_concurrent_positions?: number;
+  cooldown_seconds?: number;
+  max_loss_per_session?: number;
+  portfolio_drawdown_limit?: number;
+  per_strategy_drawdown_limit?: number;
+  extreme_loss_kill_switch?: number;
+  strategy_kill_loss?: number;
+  vol_target?: number;
+  vol_floor?: number;
+  vol_ceiling?: number;
+  low_vol_multiplier?: number;
+  high_vol_multiplier?: number;
+  min_trade_size?: number;
+  max_trade_size?: number;
+  [key: string]: number | undefined;
+};
+
 export type DecisionPayload = {
   decision: {
     signal: {
@@ -64,11 +88,12 @@ export type DecisionPayload = {
       trading_enabled: boolean;
       kill_switch: boolean;
       strategies: Record<string, boolean>;
-      risk: {
-        confidence_threshold: number;
-        max_position_size: number;
-        max_daily_loss: number;
-      };
+      risk: RiskControls;
+    };
+    app_contract?: {
+      strategy_registry: string[];
+      risk_parameters: string[];
+      missing_strategy_controls: string[];
     };
   };
   thought_stream: Array<{

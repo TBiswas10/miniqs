@@ -170,6 +170,7 @@ class EventEngine:
                     symbol=symbol,
                     session_id=self._session_id,
                     payload={
+                        "strategy": strategy,
                         "side": side,
                         "confidence": confidence,
                         "reason": reason,
@@ -310,7 +311,12 @@ class EventEngine:
             self._subscribers.discard(q)
 
     def _update_latest(self, event: EventMessage) -> None:
-        payload = {"ts": event.ts, **event.payload}
+        payload = {
+            "ts": event.ts,
+            "strategy": event.strategy_id,
+            "symbol": event.symbol,
+            **event.payload,
+        }
         if event.event_type == "portfolio_update":
             self._latest_portfolio = payload
         elif event.event_type == "order_update":
@@ -326,7 +332,13 @@ class EventEngine:
 
         state = self.get_control_state()
         risk = state.get("risk", {})
-        max_daily_loss = float(risk.get("max_daily_loss", 500.0) or 500.0)
+        max_daily_loss = float(
+            risk.get(
+                "max_daily_loss",
+                risk.get("max_loss_per_session", risk.get("daily_loss_limit", 500.0)),
+            )
+            or 500.0
+        )
         pnl = float(event.payload.get("total_pnl", 0.0) or 0.0)
         drawdown = float(event.payload.get("drawdown", 0.0) or 0.0)
 

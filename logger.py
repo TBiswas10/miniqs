@@ -129,10 +129,17 @@ class QuantLogger:
 					ts TEXT NOT NULL,
 					mean_reversion REAL NOT NULL,
 					momentum REAL NOT NULL,
+					volatility_breakout REAL NOT NULL DEFAULT 0.0,
 					reason TEXT NOT NULL
 				)
 				"""
 			)
+			cur.execute("PRAGMA table_info(feedback_log)")
+			feedback_columns = {str(row[1]) for row in cur.fetchall()}
+			if "volatility_breakout" not in feedback_columns:
+				cur.execute(
+					"ALTER TABLE feedback_log ADD COLUMN volatility_breakout REAL NOT NULL DEFAULT 0.0"
+				)
 			conn.commit()
 		finally:
 			conn.close()
@@ -316,13 +323,14 @@ class QuantLogger:
 		try:
 			conn.execute(
 				"""
-				INSERT INTO feedback_log (ts, mean_reversion, momentum, reason)
-				VALUES (?, ?, ?, ?)
+				INSERT INTO feedback_log (ts, mean_reversion, momentum, volatility_breakout, reason)
+				VALUES (?, ?, ?, ?, ?)
 				""",
 				(
 					ts,
 					float(weights.get("mean_reversion", 0.0)),
 					float(weights.get("momentum", 0.0)),
+					float(weights.get("volatility_breakout", 0.0)),
 					str(reason)[:8000],
 				),
 			)

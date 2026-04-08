@@ -277,6 +277,23 @@ Risk limits include:
 - `confidence_threshold`
 - `max_position_size`
 - `max_daily_loss`
+- `risk_per_trade`
+- `daily_loss_limit`
+- `max_exposure`
+- `max_concurrent_positions`
+- `cooldown_seconds`
+- `max_loss_per_session`
+- `portfolio_drawdown_limit`
+- `per_strategy_drawdown_limit`
+- `extreme_loss_kill_switch`
+- `strategy_kill_loss`
+- `vol_target`
+- `vol_floor`
+- `vol_ceiling`
+- `low_vol_multiplier`
+- `high_vol_multiplier`
+- `min_trade_size`
+- `max_trade_size`
 
 Shared state file:
 

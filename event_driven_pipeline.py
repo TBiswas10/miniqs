@@ -305,9 +305,7 @@ class AsyncEventDrivenPipeline:
                 "win_rate": float(metrics["win_rate"]),
                 "max_drawdown": float(metrics["max_drawdown"]),
                 "sharpe_ratio": float(metrics["sharpe_ratio"]),
-                "mean_reversion_weight": float(feedback.strategy_weights["mean_reversion"]),
-                "momentum_weight": float(feedback.strategy_weights["momentum"]),
-                "volatility_breakout_weight": float(feedback.strategy_weights.get("volatility_breakout", 0.0)),
+                "strategy_weights": {k: float(v) for k, v in feedback.strategy_weights.items()},
             }
 
 

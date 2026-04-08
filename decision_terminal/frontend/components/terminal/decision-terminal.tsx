@@ -8,6 +8,7 @@ import { ExecutionOrderPanel } from "@/components/terminal/execution-order-panel
 import { RiskDashboard } from "@/components/terminal/risk-dashboard";
 import { StrategyIntelligencePanel } from "@/components/terminal/strategy-intelligence-panel";
 import { SystemControlPanel } from "@/components/terminal/system-control-panel";
+import { RiskControls } from "@/lib/types";
 import { CheckCircle2, CircleX, Filter, Info, Radar, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -28,6 +29,19 @@ function toneFromSignal(signal: string) {
 function fmt(value: number) {
   if (!Number.isFinite(value)) return "--";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+}
+
+function toRiskDraft(risk: RiskControls): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(risk)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[key] = value;
+    }
+  }
+  if (typeof out.confidence_threshold !== "number") out.confidence_threshold = 0.35;
+  if (typeof out.max_position_size !== "number") out.max_position_size = 1;
+  if (typeof out.max_daily_loss !== "number") out.max_daily_loss = 500;
+  return out;
 }
 
 export function DecisionTerminal() {
@@ -61,11 +75,7 @@ export function DecisionTerminal() {
     updateRisk,
   } = useDecisionStream();
   const d = payload.decision;
-  const [riskDraft, setRiskDraft] = useState({
-    confidence_threshold: payload.meta.controls.risk.confidence_threshold,
-    max_position_size: payload.meta.controls.risk.max_position_size,
-    max_daily_loss: payload.meta.controls.risk.max_daily_loss,
-  });
+  const [riskDraft, setRiskDraft] = useState<Record<string, number>>(() => toRiskDraft(payload.meta.controls.risk));
   const [advancedTab, setAdvancedTab] = useState<"inspector" | "counterfactual" | "performance" | "replay">("inspector");
   const [mounted, setMounted] = useState(false);
 
@@ -74,16 +84,8 @@ export function DecisionTerminal() {
   }, []);
 
   useEffect(() => {
-    setRiskDraft({
-      confidence_threshold: payload.meta.controls.risk.confidence_threshold,
-      max_position_size: payload.meta.controls.risk.max_position_size,
-      max_daily_loss: payload.meta.controls.risk.max_daily_loss,
-    });
-  }, [
-    payload.meta.controls.risk.confidence_threshold,
-    payload.meta.controls.risk.max_position_size,
-    payload.meta.controls.risk.max_daily_loss,
-  ]);
+    setRiskDraft(toRiskDraft(payload.meta.controls.risk));
+  }, [payload.meta.controls.risk]);
 
   const equityCurve = useMemo(() => payload.performance.equity_curve || [], [payload.performance.equity_curve]);
 
