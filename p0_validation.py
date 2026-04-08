@@ -60,8 +60,18 @@ def _check_summary(name: str, summary: Dict[str, float]) -> List[GateResult]:
     )
     strategy_weights = summary.get("strategy_weights", {})
     if isinstance(strategy_weights, dict):
+<<<<<<< HEAD
         w_sum = sum(float(v) for v in strategy_weights.values())
     else:
+=======
+        w_sum = (
+            float(strategy_weights.get("mean_reversion", 0.0))
+            + float(strategy_weights.get("momentum", 0.0))
+            + float(strategy_weights.get("volatility_breakout", 0.0))
+        )
+    else:
+        # Backward compatibility for legacy summary shape.
+>>>>>>> cafff5085ecd8f15f0e62b004e2dea968f19eb60
         w_sum = (
             float(summary.get("mean_reversion_weight", 0.0))
             + float(summary.get("momentum_weight", 0.0))
