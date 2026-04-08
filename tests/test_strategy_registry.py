@@ -22,6 +22,15 @@ def _features() -> FeatureSnapshot:
         rolling_mean=100.0,
         rolling_volatility=0.01,
         momentum=0.001,
+        realized_vol_short=0.01,
+        realized_vol_long=0.01,
+        spread_bps=5.0,
+        book_imbalance=0.0,
+        rel_volume=1.0,
+        volume_zscore=0.0,
+        trend_slope_short=0.0,
+        trend_slope_long=0.0,
+        distance_to_ma50=0.0,
     )
 
 
