@@ -34,7 +34,7 @@ from strategies import FunctionStrategy, StrategyRegistry, generate_weighted_sig
 from strategies.mean_reversion import generate_signal as mean_reversion_signal  # backward-compatible test patch target
 from strategies.momentum import generate_signal as momentum_signal  # backward-compatible test patch target
 from strategies.volatility_breakout import generate_signal as volatility_breakout_signal  # backward-compatible test patch target
-from strategy_evaluator import emit_signal_event, evaluate_signals
+from strategy_evaluator import emit_signal_event, evaluate_signals_v2
 from quant_control_state import load_control_state
 
 _log = logging.getLogger(__name__)
@@ -53,6 +53,9 @@ DASHBOARD_CSV_FIELDS = [
     "weights_mo",
     "weights_vb",
 ]
+
+DEFAULT_STRATEGY_NORMALIZATION = {"mean_reversion": 1.05, "momentum": 0.9, "volatility_breakout": 1.1}
+DEFAULT_DOMINANCE_CAP = 0.65
 
 
 def _strategy_registry() -> StrategyRegistry:
@@ -146,6 +149,28 @@ def _log_trading_connection_event(logger_obj: QuantLogger, component: str, event
 
 def _write_brain_trace(cfg: AlpacaConfig, row: Dict[str, object]) -> None:
     append_jsonl(cfg.brain_trace_jsonl, row)
+
+
+def _select_signal(
+    *,
+    mr: Any,
+    mo: Any,
+    vb: Any,
+    confidence_threshold: float,
+    profile: str,
+) -> Any:
+    """Resolve the final signal with ensemble evaluator defaults in one place.
+
+    Keeping selection defaults centralized reduces merge friction when strategy
+    tuning changes across branches.
+    """
+    return evaluate_signals_v2(
+        [mr, mo, vb],
+        confidence_threshold=confidence_threshold,
+        profile=profile,
+        strategy_normalization=DEFAULT_STRATEGY_NORMALIZATION,
+        dominance_cap=DEFAULT_DOMINANCE_CAP,
+    )
 
 
 @dataclass
@@ -274,7 +299,13 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         "volatility_breakout": {"action": vb.action, "confidence": vb.confidence, "reason": vb.reason},
     }
 
-    chosen = evaluate_signals([mr, mo, vb], confidence_threshold=dynamic_conf_threshold)
+    chosen = _select_signal(
+        mr=mr,
+        mo=mo,
+        vb=vb,
+        confidence_threshold=dynamic_conf_threshold,
+        profile=runtime.cfg.evaluation_profile,
+    )
     if chosen is None:
         stage = "no_signal"
         if (
