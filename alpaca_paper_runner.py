@@ -160,11 +160,11 @@ def _write_brain_trace(cfg: AlpacaConfig, row: Dict[str, object]) -> None:
 
 def _select_signal(
     *,
-    mr: Any,
-    mo: Any,
-    vb: Any,
+    signals: Dict[str, Any],
     confidence_threshold: float,
     profile: str,
+    strategy_normalization: Dict[str, float],
+    dominance_cap: float,
 ) -> Any:
     """Resolve the final signal with ensemble evaluator defaults in one place.
 
@@ -172,11 +172,11 @@ def _select_signal(
     tuning changes across branches.
     """
     return evaluate_signals_v2(
-        [mr, mo, vb],
+        list(signals.values()),
         confidence_threshold=confidence_threshold,
         profile=profile,
-        strategy_normalization=DEFAULT_STRATEGY_NORMALIZATION,
-        dominance_cap=DEFAULT_DOMINANCE_CAP,
+        strategy_normalization=strategy_normalization,
+        dominance_cap=dominance_cap,
     )
 
 
@@ -331,17 +331,13 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         for name, signal in signals.items()
     }
 
-<<<<<<< codex/fix-critical-issues-sk8q6t
     chosen = _select_signal(
-        mr=mr,
-        mo=mo,
-        vb=vb,
+        signals=signals,
         confidence_threshold=dynamic_conf_threshold,
         profile=runtime.cfg.evaluation_profile,
+        strategy_normalization=runtime.cfg.strategy_normalization,
+        dominance_cap=runtime.cfg.dominance_cap,
     )
-=======
-    chosen = evaluate_signals(list(signals.values()), confidence_threshold=dynamic_conf_threshold)
->>>>>>> main
     if chosen is None:
         stage = "no_signal"
         if strategy_names and all(not enabled_strategies.get(name, True) for name in strategy_names):
