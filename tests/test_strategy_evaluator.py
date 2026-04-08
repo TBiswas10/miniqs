@@ -17,6 +17,15 @@ def _features(price: float, mean: float, momentum: float) -> FeatureSnapshot:
         rolling_mean=mean,
         rolling_volatility=0.02,
         momentum=momentum,
+        realized_vol_short=0.02,
+        realized_vol_long=0.02,
+        spread_bps=5.0,
+        book_imbalance=0.0,
+        rel_volume=1.0,
+        volume_zscore=0.0,
+        trend_slope_short=0.0,
+        trend_slope_long=0.0,
+        distance_to_ma50=0.0,
     )
 
 
@@ -115,6 +124,31 @@ class TestStrategyEvaluatorV2(unittest.TestCase):
 
         self.assertIsNone(chosen_default)
         self.assertIsNotNone(chosen_strict)
+
+    def test_telemetry_keys_and_winning_side_consistency(self) -> None:
+        signals = [
+            StrategySignal("momentum", "buy", 0.72, "x"),
+            StrategySignal("mean_reversion", "sell", 0.21, "x"),
+            StrategySignal("volatility_breakout", "buy", 0.55, "x"),
+        ]
+
+        chosen, telemetry = evaluate_signals_v2(
+            signals,
+            confidence_threshold=0.6,
+            return_telemetry=True,
+        )
+
+        self.assertIsNotNone(chosen)
+        assert chosen is not None
+        self.assertIn("buy_score", telemetry)
+        self.assertIn("sell_score", telemetry)
+        self.assertIn("normalized_contributions", telemetry)
+        self.assertIn("applied_threshold", telemetry)
+        self.assertIn("applied_profile", telemetry)
+        if chosen.action == "buy":
+            self.assertGreaterEqual(float(telemetry["buy_score"]), float(telemetry["sell_score"]))
+        else:
+            self.assertGreater(float(telemetry["sell_score"]), float(telemetry["buy_score"]))
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ Output:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from event_bus import EventBus, SignalEvent
 from strategies import StrategySignal
@@ -70,7 +70,8 @@ def evaluate_signals_v2(
     profile: str = "default",
     strategy_normalization: Optional[Mapping[str, float]] = None,
     dominance_cap: float = 0.65,
-) -> Optional[StrategySignal]:
+    return_telemetry: bool = False,
+) -> Union[Optional[StrategySignal], Tuple[Optional[StrategySignal], Dict[str, Any]]]:
     """Choose a signal via ensemble voting with confidence normalization.
 
     Steps:
@@ -87,7 +88,18 @@ def evaluate_signals_v2(
     threshold = _resolve_threshold(confidence_threshold, profile)
 
     actionable = [s for s in signals_list if s.action in {"buy", "sell"}]
+    normalized_contributions: Dict[str, Dict[str, float]] = {}
     if not actionable:
+        empty_telemetry = {
+            "buy_score": 0.0,
+            "sell_score": 0.0,
+            "normalized_contributions": normalized_contributions,
+            "applied_threshold": round(float(threshold), 6),
+            "applied_profile": profile,
+            "dominance_cap": float(dominance_cap),
+        }
+        if return_telemetry:
+            return None, empty_telemetry
         return None
 
     buy_raw: Dict[str, float] = {}
@@ -99,6 +111,9 @@ def evaluate_signals_v2(
         normalized_signals.append((signal, nconf))
         target = buy_raw if signal.action == "buy" else sell_raw
         target[signal.strategy] = target.get(signal.strategy, 0.0) + nconf
+        strategy_bucket = normalized_contributions.setdefault(signal.strategy, {"buy": 0.0, "sell": 0.0, "total": 0.0})
+        strategy_bucket[signal.action] += nconf
+        strategy_bucket["total"] += nconf
 
     def capped_total(side_raw: Dict[str, float]) -> float:
         raw_total = sum(side_raw.values())
@@ -111,8 +126,25 @@ def evaluate_signals_v2(
 
     buy_score = capped_total(buy_raw)
     sell_score = capped_total(sell_raw)
+    telemetry = {
+        "buy_score": round(float(buy_score), 6),
+        "sell_score": round(float(sell_score), 6),
+        "normalized_contributions": {
+            name: {
+                "buy": round(float(vals["buy"]), 6),
+                "sell": round(float(vals["sell"]), 6),
+                "total": round(float(vals["total"]), 6),
+            }
+            for name, vals in normalized_contributions.items()
+        },
+        "applied_threshold": round(float(threshold), 6),
+        "applied_profile": profile,
+        "dominance_cap": float(dominance_cap),
+    }
 
     if max(buy_score, sell_score) < threshold:
+        if return_telemetry:
+            return None, telemetry
         return None
 
     winning_action = "buy" if buy_score >= sell_score else "sell"
@@ -124,7 +156,7 @@ def evaluate_signals_v2(
     chosen_signal, chosen_nconf = max(winners, key=lambda x: x[1])
     side_score = buy_score if winning_action == "buy" else sell_score
 
-    return StrategySignal(
+    chosen = StrategySignal(
         strategy=chosen_signal.strategy,
         action=winning_action,
         confidence=round(min(1.0, side_score), 4),
@@ -133,6 +165,9 @@ def evaluate_signals_v2(
             f"buy={buy_score:.3f} sell={sell_score:.3f} leader_conf={chosen_nconf:.3f}"
         ),
     )
+    if return_telemetry:
+        return chosen, telemetry
+    return chosen
 
 
 def emit_signal_event(
