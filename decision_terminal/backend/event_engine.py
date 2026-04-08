@@ -159,8 +159,7 @@ class EventEngine:
             risk = row.get("risk") if isinstance(row.get("risk"), dict) else {}
             strategy = str(chosen.get("strategy") or "none")
             side = str(chosen.get("action") or "HOLD").upper()
-            signal_strategy = strategy
-            signal_confidence = float(chosen.get("confidence") or 0.0)
+            confidence = float(chosen.get("confidence") or 0.0)
             if not chosen:
                 signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
                 strongest_name = "none"
@@ -172,8 +171,8 @@ class EventEngine:
                     if candidate > strongest_conf:
                         strongest_conf = candidate
                         strongest_name = str(name)
-                signal_strategy = strongest_name
-                signal_confidence = strongest_conf
+                strategy = strongest_name
+                confidence = strongest_conf
             reason = str(chosen.get("reason") or row.get("detail") or "")
             events.append(
                 EventMessage(
