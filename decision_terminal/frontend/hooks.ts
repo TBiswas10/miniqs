@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DecisionPayload } from "@/lib/types";
+import { DecisionPayload, RiskControls } from "@/lib/types";
 import { API_BASE, WS_BASE } from "@/lib/config";
 
 const fallback: DecisionPayload = {
@@ -21,7 +21,16 @@ const fallback: DecisionPayload = {
       trading_enabled: true,
       kill_switch: false,
       strategies: { mean_reversion: true, momentum: true, volatility_breakout: true },
-      risk: { confidence_threshold: 0.6, max_position_size: 0.1, max_daily_loss: 500 },
+      risk: {
+        confidence_threshold: 0.6,
+        max_position_size: 0.1,
+        max_daily_loss: 500,
+        risk_per_trade: 0.01,
+        daily_loss_limit: 500,
+        max_exposure: 1,
+        max_concurrent_positions: 1,
+        cooldown_seconds: 5,
+      },
     },
   },
   thought_stream: [],
@@ -109,7 +118,11 @@ export function useDecisionStream() {
   const filteredThoughtStream = useMemo(() => {
     if (logFilter === "all") return payload.thought_stream;
     if (logFilter === "errors") return payload.thought_stream.filter((row) => row.level === "error");
-    if (logFilter === "strategies") return payload.thought_stream.filter((row) => /mean|momentum|strategy/i.test(row.stage + row.message));
+    if (logFilter === "strategies") {
+      return payload.thought_stream.filter((row) =>
+        /mean|momentum|volatility|breakout|strategy/i.test(row.stage + row.message)
+      );
+    }
     return payload.thought_stream.filter((row) => /blocked|risk/i.test(row.stage + row.message));
   }, [payload.thought_stream, logFilter]);
 
@@ -183,7 +196,7 @@ export function useDecisionStream() {
   const setTradingEnabled = async (enabled: boolean) => postControl("/api/control/trading", { enabled });
   const setKillSwitch = async (engage: boolean) => postControl("/api/control/kill-switch", { engage });
   const setStrategyEnabled = async (strategy: string, enabled: boolean) => postControl("/api/control/strategy", { strategy, enabled });
-  const updateRisk = async (risk: { confidence_threshold?: number; max_position_size?: number; max_daily_loss?: number }) =>
+  const updateRisk = async (risk: Partial<RiskControls>) =>
     postControl("/api/control/risk", risk);
 
   const replayStep = (delta: number) => {

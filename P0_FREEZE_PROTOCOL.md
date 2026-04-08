@@ -31,15 +31,3 @@ python p0_validation.py
 
 - JSON artifact in `validation_reports/p0_gate_*.json`
 - includes timestamp, git SHA, pass/fail status, individual check details
-
-## Preflight before starting the multi-week run
-
-```bash
-python experiment_preflight.py
-```
-
-This command runs the P0 gate and writes an immutable experiment manifest to
-`validation_reports/experiment_manifest_*.json` containing:
-- git SHA
-- config snapshot (thresholds/risk/profile)
-- P0 check outcomes

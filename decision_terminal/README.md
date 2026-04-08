@@ -91,11 +91,15 @@ NEXT_PUBLIC_DECISION_WS_BASE=ws://127.0.0.1:8000/ws/decisions
 - Control actions are now wired into the live runner loop (in-process effect):
   - `trading_enabled=false` stops order submission while keeping monitoring alive
   - `kill_switch=true` immediately halts trading logic
-  - strategy toggles disable selected signal generators live
-  - risk updates (`confidence_threshold`, `max_position_size`, `max_daily_loss`) affect decision/risk checks on the next ticks
+  - strategy toggles are synced to the app strategy registry (no hardcoded terminal-only list)
+  - risk updates now expose the expanded app risk contract (including drawdown, exposure, volatility sizing, cooldown, and kill-switch thresholds)
 - Debug toggle and history filters (all/executed/blocked)
 - Tooltips for metrics and status context
 - Smooth confidence bar transitions and table hover transitions
+- Snapshot metadata now includes `meta.app_contract` with:
+  - `strategy_registry`
+  - `risk_parameters`
+  - `missing_strategy_controls`
 
 ## Control API examples
 
@@ -103,6 +107,7 @@ NEXT_PUBLIC_DECISION_WS_BASE=ws://127.0.0.1:8000/ws/decisions
 curl -X POST http://127.0.0.1:8000/api/control/trading -H "Content-Type: application/json" -d "{\"enabled\": true}"
 curl -X POST http://127.0.0.1:8000/api/control/strategy -H "Content-Type: application/json" -d "{\"strategy\": \"momentum\", \"enabled\": false}"
 curl -X POST http://127.0.0.1:8000/api/control/risk -H "Content-Type: application/json" -d "{\"confidence_threshold\": 0.62, \"max_position_size\": 0.12}"
+curl -X POST http://127.0.0.1:8000/api/control/risk -H "Content-Type: application/json" -d "{\"risk_per_trade\": 0.008, \"portfolio_drawdown_limit\": 0.1, \"vol_target\": 0.012, \"cooldown_seconds\": 8}"
 curl -X POST http://127.0.0.1:8000/api/control/kill-switch -H "Content-Type: application/json" -d "{\"engage\": true}"
 ```
 

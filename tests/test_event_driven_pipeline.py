@@ -11,18 +11,10 @@ class TestEventDrivenPipeline(unittest.TestCase):
         self.assertIn("total_pnl", summary)
         self.assertIn("win_rate", summary)
         self.assertIn("max_drawdown", summary)
-        self.assertIn("mean_reversion_weight", summary)
-        self.assertIn("momentum_weight", summary)
-        self.assertIn("volatility_breakout_weight", summary)
+        self.assertIn("strategy_weights", summary)
 
         self.assertGreaterEqual(summary["executed_trades"], 0.0)
-        self.assertAlmostEqual(
-            summary["mean_reversion_weight"]
-            + summary["momentum_weight"]
-            + summary["volatility_breakout_weight"],
-            1.0,
-            places=6,
-        )
+        self.assertAlmostEqual(sum(summary["strategy_weights"].values()), 1.0, places=6)
 
 
 if __name__ == "__main__":

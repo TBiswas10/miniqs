@@ -16,6 +16,7 @@ from .event_engine import EventEngine
 from .event_persistence import EventStore
 from .event_schemas import EventMessage, KillSwitchRequest, RiskUpdateRequest, StartStopRequest, StrategyToggleRequest
 from quant_control_state import load_control_state, save_control_state
+from strategies import default_strategy_registry
 
 ROOT = Path(__file__).resolve().parents[2]
 TRACE_PATH = ROOT / "logs" / "alpaca_brain_trace.jsonl"
@@ -35,6 +36,9 @@ CONTROL_LOCK = threading.Lock()
 CONTROL_STATE: Dict[str, Any] = load_control_state()
 
 STORE = EventStore(DB_PATH, JSONL_PATH)
+SUPPORTED_STRATEGIES = tuple(default_strategy_registry().list_names())
+INT_RISK_FIELDS = {"cooldown_seconds", "max_concurrent_positions"}
+SUPPORTED_RISK_FIELDS = tuple(RiskUpdateRequest.model_fields.keys())
 
 
 def _control_copy() -> Dict[str, Any]:
@@ -199,6 +203,9 @@ def _snapshot() -> Dict[str, Any]:
     latest_risk = latest.get("risk") or {}
     controls = _control_copy()
     control_risk = controls.get("risk", {}) if isinstance(controls.get("risk"), dict) else {}
+    synced_strategy_registry = [name for name in SUPPORTED_STRATEGIES]
+    control_strategies = controls.get("strategies", {}) if isinstance(controls.get("strategies"), dict) else {}
+    missing_strategy_controls = [name for name in synced_strategy_registry if name not in control_strategies]
 
     open_orders = []
     for order in reversed(order_events[-30:]):
@@ -305,6 +312,11 @@ def _snapshot() -> Dict[str, Any]:
             "reconnects": reconnect_count,
             "last_tick_age_sec": last_tick_age_sec,
             "controls": controls,
+            "app_contract": {
+                "strategy_registry": synced_strategy_registry,
+                "risk_parameters": list(SUPPORTED_RISK_FIELDS),
+                "missing_strategy_controls": missing_strategy_controls,
+            },
         },
         "system_metrics": {
             "equity": equity,
@@ -326,6 +338,10 @@ def _snapshot() -> Dict[str, Any]:
             "confidence_threshold": confidence_threshold,
             "max_position_size": max_position_size,
             "daily_loss_limit": max_daily_loss,
+            "risk_per_trade": float(control_risk.get("risk_per_trade", 0.01)),
+            "max_exposure": float(control_risk.get("max_exposure", 1.0)),
+            "cooldown_seconds": int(control_risk.get("cooldown_seconds", 5)),
+            "portfolio_drawdown_limit": float(control_risk.get("portfolio_drawdown_limit", 0.12)),
             "latest_risk_type": str(latest_risk.get("risk_type", "")),
             "latest_risk_reason": str(latest_risk.get("reason", "")),
             "latest_risk_severity": str(latest_risk.get("severity", "info")),
@@ -381,19 +397,19 @@ def health() -> Dict[str, bool]:
     return {"ok": True}
 
 
-    @app.get("/health")
-    def root_health() -> Dict[str, Any]:
-        snap = _snapshot()
-        system_metrics = snap.get("system_metrics", {}) if isinstance(snap.get("system_metrics"), dict) else {}
-        risk_state = snap.get("risk_state", {}) if isinstance(snap.get("risk_state"), dict) else {}
-        return {
-            "ok": True,
-            "service": "decision_terminal_backend",
-            "trace_connected": bool(snap.get("meta", {}).get("connected", False)),
-            "halted": bool(risk_state.get("halted", False)),
-            "equity": float(system_metrics.get("equity", 0.0)),
-            "pnl": float(system_metrics.get("pnl", 0.0)),
-        }
+@app.get("/health")
+def root_health() -> Dict[str, Any]:
+    snap = _snapshot()
+    system_metrics = snap.get("system_metrics", {}) if isinstance(snap.get("system_metrics"), dict) else {}
+    risk_state = snap.get("risk_state", {}) if isinstance(snap.get("risk_state"), dict) else {}
+    return {
+        "ok": True,
+        "service": "decision_terminal_backend",
+        "trace_connected": bool(snap.get("meta", {}).get("connected", False)),
+        "halted": bool(risk_state.get("halted", False)),
+        "equity": float(system_metrics.get("equity", 0.0)),
+        "pnl": float(system_metrics.get("pnl", 0.0)),
+    }
 
 
 @app.get("/api/decision/snapshot")
@@ -453,8 +469,11 @@ async def control_trading(payload: StartStopRequest) -> Dict[str, Any]:
 async def control_strategy(payload: StrategyToggleRequest) -> Dict[str, Any]:
     state = _control_copy()
     strategy = payload.strategy.strip().lower()
-    if strategy not in state.get("strategies", {}):
+    if strategy not in SUPPORTED_STRATEGIES:
         raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy}")
+    state.setdefault("strategies", {})
+    for strategy_name in SUPPORTED_STRATEGIES:
+        state["strategies"].setdefault(strategy_name, True)
     state["strategies"][strategy] = payload.enabled
     persisted = _persist_control(state)
     await ENGINE.emit(
@@ -478,7 +497,9 @@ async def control_risk(payload: RiskUpdateRequest) -> Dict[str, Any]:
     updates = payload.model_dump(exclude_none=True)
     state = _control_copy()
     for key, value in updates.items():
-        state.setdefault("risk", {})[key] = float(value)
+        if key not in SUPPORTED_RISK_FIELDS:
+            raise HTTPException(status_code=400, detail=f"Unsupported risk parameter: {key}")
+        state.setdefault("risk", {})[key] = int(value) if key in INT_RISK_FIELDS else float(value)
     persisted = _persist_control(state)
     await ENGINE.emit(
         EventMessage(

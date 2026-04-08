@@ -1,10 +1,14 @@
 .env
 __pycache__/
+**/__pycache__/
 *.pyc
 *.db
+*.db-journal
 logs/
 validation_reports/
 node_modules/
 .next/
 decision_terminal/frontend/node_modules/
 decision_terminal/frontend/.next/
+alpaca_logs.events.jsonl
+research_data/**/*.manifest.json
