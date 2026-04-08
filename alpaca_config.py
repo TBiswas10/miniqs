@@ -26,6 +26,32 @@ def _bool(value: Any, default: bool) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _float_in_range(value: Any, *, default: float, min_value: float, max_value: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if min_value <= parsed <= max_value:
+        return parsed
+    return default
+
+
+def _strategy_normalization(
+    value: Any,
+    *,
+    default: Dict[str, float],
+    min_value: float = 0.1,
+    max_value: float = 5.0,
+) -> Dict[str, float]:
+    if not isinstance(value, dict):
+        return dict(default)
+    merged = dict(default)
+    for key in default:
+        parsed = _float_in_range(value.get(key), default=default[key], min_value=min_value, max_value=max_value)
+        merged[key] = parsed
+    return merged
+
+
 def _load_structured_file(path: Path) -> Dict[str, Any]:
     raw = path.read_text(encoding="utf-8")
     suffix = path.suffix.lower()
@@ -92,6 +118,14 @@ class AlpacaConfig:
     mom_threshold: float = 0.002
     vb_breakout_factor: float = 1.2
     feedback_trade_interval: int = 10
+    strategy_normalization: Dict[str, float] = field(
+        default_factory=lambda: {
+            "mean_reversion": 1.0,
+            "momentum": 1.0,
+            "volatility_breakout": 1.0,
+        }
+    )
+    dominance_cap: float = 0.65
     max_ticks: Optional[int] = None
     # Optional: align Portfolio initial cash with Alpaca paper account
     sync_initial_cash_from_alpaca: bool = True
@@ -156,6 +190,20 @@ class AlpacaConfig:
             mom_threshold=float(strategy.get("mom_threshold", root.get("mom_threshold", 0.002))),
             vb_breakout_factor=float(strategy.get("vb_breakout_factor", root.get("vb_breakout_factor", 1.2))),
             feedback_trade_interval=int(strategy.get("feedback_trade_interval", root.get("feedback_trade_interval", 10))),
+            strategy_normalization=_strategy_normalization(
+                strategy.get("strategy_normalization", root.get("strategy_normalization")),
+                default={
+                    "mean_reversion": 1.0,
+                    "momentum": 1.0,
+                    "volatility_breakout": 1.0,
+                },
+            ),
+            dominance_cap=_float_in_range(
+                strategy.get("dominance_cap", root.get("dominance_cap")),
+                default=0.65,
+                min_value=0.1,
+                max_value=1.0,
+            ),
             max_ticks=max_ticks,
             sync_initial_cash_from_alpaca=_bool(root.get("sync_initial_cash_from_alpaca"), True),
             portfolio_fee_rate=float(root.get("portfolio_fee_rate", 0.0)),
@@ -196,6 +244,13 @@ class AlpacaConfig:
 
         max_ticks_s = _env("ALPACA_MAX_TICKS", str(base.max_ticks or ""))
         max_ticks: Optional[int] = int(max_ticks_s) if str(max_ticks_s).isdigit() else base.max_ticks
+        normalization_env_raw = _env("ALPACA_STRATEGY_NORMALIZATION")
+        normalization_env_value: Any = None
+        if normalization_env_raw:
+            try:
+                normalization_env_value = json.loads(normalization_env_raw)
+            except json.JSONDecodeError:
+                normalization_env_value = None
 
         return cls(
             api_key_id=key,
@@ -224,6 +279,16 @@ class AlpacaConfig:
             mom_threshold=float(_env("ALPACA_MOM_THRESHOLD", str(base.mom_threshold))),
             vb_breakout_factor=float(_env("ALPACA_VB_BREAKOUT_FACTOR", str(base.vb_breakout_factor))),
             feedback_trade_interval=int(_env("ALPACA_FEEDBACK_TRADE_INTERVAL", str(base.feedback_trade_interval))),
+            strategy_normalization=_strategy_normalization(
+                normalization_env_value if normalization_env_value is not None else base.strategy_normalization,
+                default=base.strategy_normalization,
+            ),
+            dominance_cap=_float_in_range(
+                _env("ALPACA_DOMINANCE_CAP", str(base.dominance_cap)),
+                default=base.dominance_cap,
+                min_value=0.1,
+                max_value=1.0,
+            ),
             max_ticks=max_ticks,
             sync_initial_cash_from_alpaca=base.sync_initial_cash_from_alpaca,
             portfolio_fee_rate=base.portfolio_fee_rate,
