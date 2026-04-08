@@ -34,7 +34,7 @@ from strategies import FunctionStrategy, StrategyRegistry, generate_weighted_sig
 from strategies.mean_reversion import generate_signal as mean_reversion_signal  # backward-compatible test patch target
 from strategies.momentum import generate_signal as momentum_signal  # backward-compatible test patch target
 from strategies.volatility_breakout import generate_signal as volatility_breakout_signal  # backward-compatible test patch target
-from strategy_evaluator import emit_signal_event, evaluate_signals
+from strategy_evaluator import emit_signal_event, evaluate_signals_v2
 from quant_control_state import load_control_state
 
 _log = logging.getLogger(__name__)
@@ -274,7 +274,13 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         "volatility_breakout": {"action": vb.action, "confidence": vb.confidence, "reason": vb.reason},
     }
 
-    chosen = evaluate_signals([mr, mo, vb], confidence_threshold=dynamic_conf_threshold)
+    chosen = evaluate_signals_v2(
+        [mr, mo, vb],
+        confidence_threshold=dynamic_conf_threshold,
+        profile=runtime.cfg.evaluation_profile,
+        strategy_normalization={"mean_reversion": 1.05, "momentum": 0.9, "volatility_breakout": 1.1},
+        dominance_cap=0.65,
+    )
     if chosen is None:
         stage = "no_signal"
         if (
