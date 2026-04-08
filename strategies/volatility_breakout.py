@@ -19,6 +19,9 @@ def generate_signal(
     features: FeatureSnapshot,
     breakout_factor: float = 1.2,
     min_volatility: float = 0.005,
+    min_volatility_expansion: float = 1.1,
+    max_spread: float = 0.002,
+    min_volume_confirmation: float = 1.0,
 ) -> StrategySignal:
     """Generate breakout signal on momentum expansion relative to volatility.
 
@@ -35,13 +38,51 @@ def generate_signal(
             reason="invalid rolling mean",
         )
 
-    vol = max(features.rolling_volatility, 1e-6)
+    return_volatility = float(getattr(features, "return_volatility", features.rolling_volatility))
+    baseline_return_volatility = float(
+        getattr(features, "baseline_return_volatility", min_volatility)
+    )
+
+    vol = max(return_volatility, 1e-6)
     if vol < min_volatility:
         return StrategySignal(
             strategy="volatility_breakout",
             action="hold",
             confidence=0.0,
-            reason=f"volatility below expansion floor {vol:.4f}",
+            reason=f"return volatility below expansion floor {vol:.4f}",
+        )
+
+    expansion = vol / max(baseline_return_volatility, 1e-9)
+    if expansion < min_volatility_expansion:
+        return StrategySignal(
+            strategy="volatility_breakout",
+            action="hold",
+            confidence=0.0,
+            reason=f"volatility expansion too weak ratio={expansion:.3f}",
+        )
+
+    spread = float(getattr(features, "spread", 0.0))
+    if spread > max(max_spread, 0.0):
+        return StrategySignal(
+            strategy="volatility_breakout",
+            action="hold",
+            confidence=0.0,
+            reason=f"spread too wide spread={spread:.4%}",
+        )
+
+    volume_confirmation = float(
+        getattr(
+            features,
+            "volume_confirmation",
+            getattr(features, "relative_volume", 1.0),
+        )
+    )
+    if volume_confirmation < min_volume_confirmation:
+        return StrategySignal(
+            strategy="volatility_breakout",
+            action="hold",
+            confidence=0.0,
+            reason=f"volume confirmation too weak {volume_confirmation:.3f}",
         )
 
     threshold = breakout_factor * vol
@@ -82,4 +123,7 @@ class VolatilityBreakoutStrategy:
             features,
             breakout_factor=float(params.get("breakout_factor", 1.2)),
             min_volatility=float(params.get("min_volatility", 0.005)),
+            min_volatility_expansion=float(params.get("min_volatility_expansion", 1.1)),
+            max_spread=float(params.get("max_spread", 0.002)),
+            min_volume_confirmation=float(params.get("min_volume_confirmation", 1.0)),
         )
