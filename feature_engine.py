@@ -62,6 +62,7 @@ class FeatureEngine:
 		history_len = max(ma_window, long_ma_window, vol_window, momentum_window + 1)
 		self._prices: Deque[float] = deque(maxlen=history_len)
 		self._latest_features: Optional[Dict[str, float]] = None
+		self._latest_event_input: Optional[Dict[str, object]] = None
 
 	def update_features(self, new_tick: Union[Tick, Dict[str, object]]) -> Optional[Dict[str, float]]:
 		"""Update feature state with a new tick and return latest feature vector.
@@ -76,8 +77,15 @@ class FeatureEngine:
 		"""
 		if isinstance(new_tick, Tick):
 			price = float(new_tick.price)
+			self._latest_event_input = new_tick.to_feature_payload()
 		else:
-			price = float(new_tick["mid_price"])
+			price_raw = new_tick.get("mid_price", new_tick.get("price"))
+			if price_raw is None:
+				raise KeyError("new_tick must include 'mid_price' (or 'price' for richer payloads)")
+			price = float(price_raw)
+			adapted = dict(new_tick)
+			adapted.setdefault("mid_price", price)
+			self._latest_event_input = adapted
 
 		self._prices.append(price)
 
@@ -117,6 +125,10 @@ class FeatureEngine:
 	def get_latest_features(self) -> Optional[Dict[str, float]]:
 		"""Return latest computed feature vector."""
 		return self._latest_features
+
+	def get_latest_event_input(self) -> Optional[Dict[str, object]]:
+		"""Return the latest raw event payload adapted for feature computation."""
+		return self._latest_event_input
 
 	def update(self, tick: Tick) -> Optional[FeatureSnapshot]:
 		"""Consume a tick and return features when enough history exists.

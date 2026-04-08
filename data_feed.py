@@ -29,6 +29,27 @@ class Tick:
     price: float
     timestamp: datetime
     volume: float
+    message_type: str = ""
+    bid_price: Optional[float] = None
+    ask_price: Optional[float] = None
+    bid_size: Optional[float] = None
+    ask_size: Optional[float] = None
+    trade_size: Optional[float] = None
+
+    def to_feature_payload(self) -> Dict[str, object]:
+        """Return a backwards-compatible feature payload plus microstructure fields."""
+        return {
+            "symbol": self.symbol,
+            "timestamp": self.timestamp.isoformat(),
+            "mid_price": float(self.price),
+            "message_type": self.message_type,
+            "bid_price": self.bid_price,
+            "ask_price": self.ask_price,
+            "bid_size": self.bid_size,
+            "ask_size": self.ask_size,
+            "trade_size": self.trade_size,
+            "volume": float(self.volume),
+        }
 
 
 class DataFeed:
