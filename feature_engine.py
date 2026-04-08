@@ -204,7 +204,9 @@ class FeatureEngine:
 			timestamp=tick.timestamp,
 			price=float(tick.price),
 			rolling_mean=feature_vector["rolling_avg_20"],
-			rolling_volatility=feature_vector["volatility"],
+			# `rolling_volatility` is intended to be return volatility for strategy
+			# regime filters, not an absolute price range.
+			rolling_volatility=feature_vector["realized_vol_short"],
 			momentum=feature_vector["momentum"],
 			realized_vol_short=feature_vector["realized_vol_short"],
 			realized_vol_long=feature_vector["realized_vol_long"],

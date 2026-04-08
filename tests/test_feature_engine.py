@@ -112,6 +112,7 @@ class TestFeatureEngine(unittest.TestCase):
         expected_distance_to_ma50 = float((current_price - long_ma) / long_ma)
 
         self.assertAlmostEqual(snapshot.realized_vol_short, expected_realized_vol_short, places=8)
+        self.assertAlmostEqual(snapshot.rolling_volatility, expected_realized_vol_short, places=8)
         self.assertAlmostEqual(snapshot.realized_vol_long, expected_realized_vol_long, places=8)
         self.assertAlmostEqual(snapshot.spread_bps, expected_spread_bps, places=8)
         self.assertAlmostEqual(snapshot.book_imbalance, expected_book_imbalance, places=8)
