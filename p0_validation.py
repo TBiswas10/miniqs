@@ -58,11 +58,20 @@ def _check_summary(name: str, summary: Dict[str, float]) -> List[GateResult]:
             details=f"max_drawdown={summary.get('max_drawdown', 1.0)}",
         )
     )
-    w_sum = (
-        float(summary.get("mean_reversion_weight", 0.0))
-        + float(summary.get("momentum_weight", 0.0))
-        + float(summary.get("volatility_breakout_weight", 0.0))
-    )
+    strategy_weights = summary.get("strategy_weights", {})
+    if isinstance(strategy_weights, dict):
+        w_sum = (
+            float(strategy_weights.get("mean_reversion", 0.0))
+            + float(strategy_weights.get("momentum", 0.0))
+            + float(strategy_weights.get("volatility_breakout", 0.0))
+        )
+    else:
+        # Backward compatibility for legacy summary shape.
+        w_sum = (
+            float(summary.get("mean_reversion_weight", 0.0))
+            + float(summary.get("momentum_weight", 0.0))
+            + float(summary.get("volatility_breakout_weight", 0.0))
+        )
     checks.append(
         GateResult(
             name=f"{name}.weight_sum",
