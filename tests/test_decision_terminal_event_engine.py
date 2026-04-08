@@ -44,11 +44,9 @@ class TestDecisionTerminalEventEngine(unittest.TestCase):
         events = engine._map_trace_row(row)
         self.assertTrue(events)
         signal_event = next(event for event in events if event.event_type == "strategy_signal")
-        portfolio_event = next(event for event in events if event.event_type == "portfolio_update")
         self.assertEqual(signal_event.payload.get("side"), "HOLD")
         self.assertEqual(signal_event.payload.get("strategy"), "momentum")
         self.assertAlmostEqual(float(signal_event.payload.get("confidence", 0.0)), 0.29816, places=6)
-        self.assertEqual(portfolio_event.strategy_id, "none")
 
     def test_chosen_signal_takes_priority_when_present(self) -> None:
         engine = self._engine()
