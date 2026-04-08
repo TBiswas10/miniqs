@@ -1,4 +1,4 @@
-"""Mean reversion strategy.
+"""Range-aware mean reversion strategy.
 
 Input:
 - FeatureSnapshot
@@ -15,14 +15,18 @@ from feature_engine import FeatureSnapshot
 from strategies import StrategySignal
 
 
-def generate_signal(features: FeatureSnapshot, entry_threshold: float = 0.003) -> StrategySignal:
-    """Generate mean-reversion signal.
+def generate_signal(
+    features: FeatureSnapshot,
+    entry_threshold: float = 0.003,
+    max_trend_momentum: float = 0.004,
+    max_volatility: float = 0.03,
+) -> StrategySignal:
+    """Generate mean-reversion signal with simple regime gating.
 
     Logic:
-    - Compare price vs rolling mean.
-    - If price is sufficiently above mean -> sell.
-    - If price is sufficiently below mean -> buy.
-    - Otherwise hold.
+    - Mean reversion is most reliable in range-bound / lower-volatility regimes.
+    - If momentum is too directional or volatility is too high, hold.
+    - Otherwise, fade deviations from the rolling mean.
     """
     if features.rolling_mean <= 0:
         return StrategySignal(
@@ -34,6 +38,22 @@ def generate_signal(features: FeatureSnapshot, entry_threshold: float = 0.003) -
 
     deviation = (features.price - features.rolling_mean) / features.rolling_mean
     strength = min(1.0, abs(deviation) / max(entry_threshold, 1e-9))
+
+    if abs(features.momentum) > max(max_trend_momentum, 1e-9):
+        return StrategySignal(
+            strategy="mean_reversion",
+            action="hold",
+            confidence=0.0,
+            reason=f"trend filter active momentum={features.momentum:.4%}",
+        )
+
+    if features.rolling_volatility > max_volatility:
+        return StrategySignal(
+            strategy="mean_reversion",
+            action="hold",
+            confidence=0.0,
+            reason=f"volatility filter active vol={features.rolling_volatility:.4f}",
+        )
 
     if deviation >= entry_threshold:
         return StrategySignal(
@@ -64,4 +84,9 @@ class MeanReversionStrategy:
     name: str = "mean_reversion"
 
     def generate_signal(self, features: FeatureSnapshot, **params: float) -> StrategySignal:
-        return generate_signal(features, entry_threshold=float(params.get("entry_threshold", 0.003)))
+        return generate_signal(
+            features,
+            entry_threshold=float(params.get("entry_threshold", 0.003)),
+            max_trend_momentum=float(params.get("max_trend_momentum", 0.004)),
+            max_volatility=float(params.get("max_volatility", 0.03)),
+        )

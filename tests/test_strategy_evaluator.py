@@ -32,7 +32,8 @@ class TestStrategyEvaluator(unittest.TestCase):
 
         self.assertIsNotNone(chosen)
         assert chosen is not None
-        self.assertEqual(chosen.action, "sell")
+        self.assertEqual(chosen.strategy, "momentum")
+        self.assertEqual(chosen.action, "buy")
         self.assertGreaterEqual(chosen.confidence, 0.6)
 
     def test_returns_none_below_threshold(self) -> None:
