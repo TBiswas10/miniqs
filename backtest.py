@@ -50,6 +50,9 @@ class BacktestRuntime:
 	iteration_index: int = 0
 	last_trade_ts: Optional[str] = None
 	tick_index: int = 0
+	strategy_selection_counts: Dict[str, int] = field(default_factory=dict)
+	risk_checks: int = 0
+	risk_blocks: int = 0
 
 
 def _on_backtest_market_event(event: MarketEvent, bus: EventBus, runtime: BacktestRuntime) -> None:
@@ -119,6 +122,7 @@ def _on_backtest_market_event(event: MarketEvent, bus: EventBus, runtime: Backte
 	chosen = evaluate_signals([mr, mo, vb], confidence_threshold=runtime.confidence_threshold)
 	if chosen is not None:
 		if chosen.action != "sell" or float(state["position_size"]) > 0:
+			runtime.strategy_selection_counts[chosen.strategy] = runtime.strategy_selection_counts.get(chosen.strategy, 0) + 1
 			trade = {
 				"action": chosen.action,
 				"size": runtime.trade_size,
@@ -176,8 +180,10 @@ def _on_backtest_market_event(event: MarketEvent, bus: EventBus, runtime: Backte
 
 
 def _on_backtest_signal_event(event: SignalEvent, bus: EventBus, runtime: BacktestRuntime) -> None:
+	runtime.risk_checks += 1
 	allow, reason, adjusted_trade, _ = runtime.risk_engine.assess_trade(event.trade, event.risk_state)
 	if not allow:
+		runtime.risk_blocks += 1
 		return
 	bus.publish(OrderEvent(strategy=event.strategy, trade=adjusted_trade, reason=reason))
 
@@ -424,6 +430,10 @@ def run_backtest(
 
 	result = {
 		"pipeline": metrics,
+		"strategy_selection_counts": {k: int(v) for k, v in runtime.strategy_selection_counts.items()},
+		"risk_checks": float(runtime.risk_checks),
+		"risk_blocks": float(runtime.risk_blocks),
+		"risk_block_rate": float(runtime.risk_blocks / runtime.risk_checks) if runtime.risk_checks > 0 else 0.0,
 		"baseline_naive_mean_reversion": _baseline_naive_mean_reversion(prices),
 		"baseline_pure_momentum": _baseline_pure_momentum(prices),
 		"final_iteration_state": {
@@ -474,6 +484,18 @@ def run_walk_forward_backtest(
 				"optimized_config": best_cfg,
 				"in_sample": in_sample["pipeline"],
 				"out_of_sample": out_sample["pipeline"],
+				"in_sample_details": {
+					"strategy_selection_counts": in_sample.get("strategy_selection_counts", {}),
+					"risk_checks": float(in_sample.get("risk_checks", 0.0)),
+					"risk_blocks": float(in_sample.get("risk_blocks", 0.0)),
+					"risk_block_rate": float(in_sample.get("risk_block_rate", 0.0)),
+				},
+				"out_of_sample_details": {
+					"strategy_selection_counts": out_sample.get("strategy_selection_counts", {}),
+					"risk_checks": float(out_sample.get("risk_checks", 0.0)),
+					"risk_blocks": float(out_sample.get("risk_blocks", 0.0)),
+					"risk_block_rate": float(out_sample.get("risk_block_rate", 0.0)),
+				},
 				"train_research_version": in_sample.get("research_version"),
 				"test_research_version": out_sample.get("research_version"),
 			}

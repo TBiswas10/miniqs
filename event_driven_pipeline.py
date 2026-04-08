@@ -78,6 +78,9 @@ class AsyncEventDrivenPipeline:
         self.last_trade_timestamp: str | None = None
         self.risk_engine: RiskEngine | None = None
         self.strategy_registry: StrategyRegistry = default_strategy_registry()
+        self.strategy_selection_counts: Dict[str, int] = {}
+        self.risk_checks = 0
+        self.risk_blocks = 0
 
     async def _ingestion_worker(self, feed: DataFeed) -> None:
         stream = feed.stream()
@@ -142,6 +145,7 @@ class AsyncEventDrivenPipeline:
                     dominance_cap=0.65,
                 )
                 if chosen is not None:
+                    self.strategy_selection_counts[chosen.strategy] = self.strategy_selection_counts.get(chosen.strategy, 0) + 1
                     trade = {
                         "action": chosen.action,
                         "size": 1.0,
@@ -184,6 +188,7 @@ class AsyncEventDrivenPipeline:
             if self.risk_engine is None:
                 raise RuntimeError("risk engine not initialized")
 
+            self.risk_checks += 1
             allow, reason, adjusted_trade, _ = await asyncio.to_thread(
                 self.risk_engine.assess_trade,
                 event.trade,
@@ -198,6 +203,7 @@ class AsyncEventDrivenPipeline:
                     )
                 )
             else:
+                self.risk_blocks += 1
                 logger.log_risk_block(reason, str(event.trade))
                 if "strategy_kill_switch" in reason:
                     feedback.strategy_enabled[event.strategy] = False
@@ -311,6 +317,11 @@ class AsyncEventDrivenPipeline:
                 "win_rate": float(metrics["win_rate"]),
                 "max_drawdown": float(metrics["max_drawdown"]),
                 "sharpe_ratio": float(metrics["sharpe_ratio"]),
+                "trade_count": float(metrics["trade_count"]),
+                "strategy_selection_counts": {k: int(v) for k, v in self.strategy_selection_counts.items()},
+                "risk_checks": float(self.risk_checks),
+                "risk_blocks": float(self.risk_blocks),
+                "risk_block_rate": float(self.risk_blocks / self.risk_checks) if self.risk_checks > 0 else 0.0,
                 "strategy_weights": {k: float(v) for k, v in feedback.strategy_weights.items()},
             }
 
