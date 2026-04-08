@@ -34,7 +34,7 @@ from performance import PerformanceTracker
 from portfolio import Portfolio
 from risk_manager import RiskConfig, RiskEngine
 from strategies import StrategyRegistry, default_strategy_registry, generate_weighted_signals
-from strategy_evaluator import emit_signal_event, evaluate_signals
+from strategy_evaluator import emit_signal_event, evaluate_signals_v2
 
 
 @dataclass
@@ -249,7 +249,13 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: PipelineRuntime
     runtime.logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
     runtime.logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
 
-    chosen = evaluate_signals([mr, mo, vb], confidence_threshold=runtime.confidence_threshold)
+    chosen = evaluate_signals_v2(
+        [mr, mo, vb],
+        confidence_threshold=runtime.confidence_threshold,
+        profile="default",
+        strategy_normalization={"mean_reversion": 1.05, "momentum": 0.9, "volatility_breakout": 1.1},
+        dominance_cap=0.65,
+    )
     if chosen is None:
         return
 

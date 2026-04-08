@@ -34,7 +34,7 @@ from strategies import FunctionStrategy, StrategyRegistry, default_strategy_regi
 from strategies.mean_reversion import generate_signal as mean_reversion_signal  # backward-compatible test patch target
 from strategies.momentum import generate_signal as momentum_signal  # backward-compatible test patch target
 from strategies.volatility_breakout import generate_signal as volatility_breakout_signal  # backward-compatible test patch target
-from strategy_evaluator import emit_signal_event, evaluate_signals
+from strategy_evaluator import emit_signal_event, evaluate_signals_v2
 from quant_control_state import load_control_state
 
 _log = logging.getLogger(__name__)
@@ -156,6 +156,28 @@ def _log_trading_connection_event(logger_obj: QuantLogger, component: str, event
 
 def _write_brain_trace(cfg: AlpacaConfig, row: Dict[str, object]) -> None:
     append_jsonl(cfg.brain_trace_jsonl, row)
+
+
+def _select_signal(
+    *,
+    mr: Any,
+    mo: Any,
+    vb: Any,
+    confidence_threshold: float,
+    profile: str,
+) -> Any:
+    """Resolve the final signal with ensemble evaluator defaults in one place.
+
+    Keeping selection defaults centralized reduces merge friction when strategy
+    tuning changes across branches.
+    """
+    return evaluate_signals_v2(
+        [mr, mo, vb],
+        confidence_threshold=confidence_threshold,
+        profile=profile,
+        strategy_normalization=DEFAULT_STRATEGY_NORMALIZATION,
+        dominance_cap=DEFAULT_DOMINANCE_CAP,
+    )
 
 
 @dataclass
@@ -309,7 +331,17 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         for name, signal in signals.items()
     }
 
+<<<<<<< codex/fix-critical-issues-sk8q6t
+    chosen = _select_signal(
+        mr=mr,
+        mo=mo,
+        vb=vb,
+        confidence_threshold=dynamic_conf_threshold,
+        profile=runtime.cfg.evaluation_profile,
+    )
+=======
     chosen = evaluate_signals(list(signals.values()), confidence_threshold=dynamic_conf_threshold)
+>>>>>>> main
     if chosen is None:
         stage = "no_signal"
         if strategy_names and all(not enabled_strategies.get(name, True) for name in strategy_names):
