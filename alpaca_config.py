@@ -87,6 +87,7 @@ class AlpacaConfig:
     risk_per_trade: float = 0.01
     daily_loss_limit: float = 500.0
     confidence_threshold: float = 0.35
+    evaluation_profile: str = "default"
     mr_threshold: float = 0.003
     mom_threshold: float = 0.002
     vb_breakout_factor: float = 1.2
@@ -150,6 +151,7 @@ class AlpacaConfig:
             risk_per_trade=float(risk.get("risk_per_trade", root.get("risk_per_trade", 0.01))),
             daily_loss_limit=float(risk.get("daily_loss_limit", root.get("daily_loss_limit", 500.0))),
             confidence_threshold=float(risk.get("confidence_threshold", root.get("confidence_threshold", 0.35))),
+            evaluation_profile=str(strategy.get("evaluation_profile", root.get("evaluation_profile", "default"))),
             mr_threshold=float(strategy.get("mr_threshold", root.get("mr_threshold", 0.003))),
             mom_threshold=float(strategy.get("mom_threshold", root.get("mom_threshold", 0.002))),
             vb_breakout_factor=float(strategy.get("vb_breakout_factor", root.get("vb_breakout_factor", 1.2))),
@@ -217,6 +219,7 @@ class AlpacaConfig:
             risk_per_trade=float(_env("ALPACA_RISK_PER_TRADE", str(base.risk_per_trade))),
             daily_loss_limit=float(_env("ALPACA_DAILY_LOSS_LIMIT", str(base.daily_loss_limit))),
             confidence_threshold=float(_env("ALPACA_CONFIDENCE_THRESHOLD", str(base.confidence_threshold))),
+            evaluation_profile=_env("ALPACA_EVALUATION_PROFILE", base.evaluation_profile),
             mr_threshold=float(_env("ALPACA_MR_THRESHOLD", str(base.mr_threshold))),
             mom_threshold=float(_env("ALPACA_MOM_THRESHOLD", str(base.mom_threshold))),
             vb_breakout_factor=float(_env("ALPACA_VB_BREAKOUT_FACTOR", str(base.vb_breakout_factor))),

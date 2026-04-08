@@ -6,7 +6,7 @@ from feature_engine import FeatureSnapshot
 from strategies import StrategySignal
 from strategies.mean_reversion import generate_signal as mean_reversion_signal
 from strategies.momentum import generate_signal as momentum_signal
-from strategy_evaluator import emit_signal_event, evaluate_signals
+from strategy_evaluator import emit_signal_event, evaluate_signals, evaluate_signals_v2
 
 
 def _features(price: float, mean: float, momentum: float) -> FeatureSnapshot:
@@ -32,7 +32,8 @@ class TestStrategyEvaluator(unittest.TestCase):
 
         self.assertIsNotNone(chosen)
         assert chosen is not None
-        self.assertEqual(chosen.action, "sell")
+        self.assertEqual(chosen.strategy, "momentum")
+        self.assertEqual(chosen.action, "buy")
         self.assertGreaterEqual(chosen.confidence, 0.6)
 
     def test_returns_none_below_threshold(self) -> None:
@@ -69,6 +70,51 @@ class TestStrategyEvaluator(unittest.TestCase):
         required = {"action", "size", "confidence", "price", "strategy", "symbol"}
         self.assertTrue(required.issubset(set(event.trade.keys())))
         self.assertIn("max_position_size", event.risk_state)
+
+
+class TestStrategyEvaluatorV2(unittest.TestCase):
+    def test_ensemble_voting_prefers_aggregate_side(self) -> None:
+        signals = [
+            StrategySignal("momentum", "buy", 0.56, "x"),
+            StrategySignal("mean_reversion", "buy", 0.55, "x"),
+            StrategySignal("volatility_breakout", "sell", 0.8, "x"),
+        ]
+
+        chosen = evaluate_signals_v2(signals, confidence_threshold=0.6)
+
+        self.assertIsNotNone(chosen)
+        assert chosen is not None
+        self.assertEqual(chosen.action, "buy")
+
+    def test_per_strategy_normalization_reduces_momentum_dominance(self) -> None:
+        signals = [
+            StrategySignal("momentum", "buy", 0.95, "x"),
+            StrategySignal("mean_reversion", "buy", 0.7, "x"),
+            StrategySignal("volatility_breakout", "buy", 0.65, "x"),
+        ]
+
+        chosen = evaluate_signals_v2(
+            signals,
+            confidence_threshold=0.6,
+            strategy_normalization={"momentum": 0.45, "mean_reversion": 1.0, "volatility_breakout": 1.0},
+            dominance_cap=0.6,
+        )
+
+        self.assertIsNotNone(chosen)
+        assert chosen is not None
+        self.assertNotEqual(chosen.strategy, "momentum")
+
+    def test_strict_forward_profile_relaxes_threshold(self) -> None:
+        signals = [
+            StrategySignal("momentum", "buy", 0.5, "x"),
+            StrategySignal("mean_reversion", "hold", 0.2, "x"),
+        ]
+
+        chosen_default = evaluate_signals_v2(signals, confidence_threshold=0.6, profile="default")
+        chosen_strict = evaluate_signals_v2(signals, confidence_threshold=0.6, profile="strict_forward")
+
+        self.assertIsNone(chosen_default)
+        self.assertIsNotNone(chosen_strict)
 
 
 if __name__ == "__main__":
