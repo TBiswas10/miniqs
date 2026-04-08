@@ -15,6 +15,20 @@ from feature_engine import FeatureSnapshot
 from strategies import StrategySignal
 
 
+def _effective_volatility(features: FeatureSnapshot) -> float:
+    """Return volatility in comparable units for gating.
+
+    `FeatureEngine` currently emits `rolling_volatility` as absolute price range,
+    but strategy thresholds are configured in return-space (e.g. 0.03 == 3%).
+    For large-priced assets, normalize obvious absolute ranges by current price.
+    """
+    raw_vol = float(features.rolling_volatility)
+    price = max(float(features.price), 1e-9)
+    if raw_vol > 1.0:
+        return raw_vol / price
+    return raw_vol
+
+
 def generate_signal(
     features: FeatureSnapshot,
     entry_threshold: float = 0.003,
@@ -50,12 +64,13 @@ def generate_signal(
             reason=f"trend filter active momentum={features.momentum:.4%}",
         )
 
-    if features.rolling_volatility > max_volatility:
+    effective_volatility = _effective_volatility(features)
+    if effective_volatility > max_volatility:
         return StrategySignal(
             strategy="mean_reversion",
             action="hold",
             confidence=0.0,
-            reason=f"volatility filter active vol={features.rolling_volatility:.4f}",
+            reason=f"volatility filter active vol={effective_volatility:.4f}",
         )
 
     spread = float(getattr(features, "spread", 0.0))

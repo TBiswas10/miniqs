@@ -63,3 +63,8 @@ class KillSwitchRequest(BaseModel):
 class ReplayQuery(BaseModel):
     limit: int = 200
     event_type: Optional[EventType] = None
+
+
+class ReplayForkRequest(BaseModel):
+    input_prices: list[float] | None = None
+    config_override: Dict[str, Any] = Field(default_factory=dict)

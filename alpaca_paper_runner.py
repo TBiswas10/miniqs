@@ -350,6 +350,10 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         stage = "no_signal"
         if strategy_names and all(not enabled_strategies.get(name, True) for name in strategy_names):
             no_signal_reason = "all_strategies_disabled"
+        elif int(evaluator_telemetry.get("actionable_count", 0)) == 0:
+            no_signal_reason = "no_actionable_signal"
+        elif float(evaluator_telemetry.get("max_side_score", 0.0)) < float(evaluator_telemetry.get("applied_threshold", dynamic_conf_threshold)):
+            no_signal_reason = "ensemble_score_below_threshold"
         else:
             no_signal_reason = "confidence_below_threshold"
         _write_brain_trace(

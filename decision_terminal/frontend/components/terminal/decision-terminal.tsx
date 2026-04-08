@@ -9,8 +9,8 @@ import { RiskDashboard } from "@/components/terminal/risk-dashboard";
 import { StrategyIntelligencePanel } from "@/components/terminal/strategy-intelligence-panel";
 import { SystemControlPanel } from "@/components/terminal/system-control-panel";
 import { RiskControls } from "@/lib/types";
-import { CheckCircle2, CircleX, Filter, Info, Radar, ShieldAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ArrowDownRight, ArrowUpRight, CheckCircle2, ChevronDown, ChevronUp, CircleX, Filter, Info, Radar, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 function toneFromAction(action: string) {
@@ -67,6 +67,7 @@ export function DecisionTerminal() {
     replayPlaying,
     setReplayPlaying,
     replayStep,
+    replaySeek,
     controlError,
     clearControlError,
     setTradingEnabled,
@@ -78,6 +79,16 @@ export function DecisionTerminal() {
   const [riskDraft, setRiskDraft] = useState<Record<string, number>>(() => toRiskDraft(payload.meta.controls.risk));
   const [advancedTab, setAdvancedTab] = useState<"inspector" | "counterfactual" | "performance" | "replay">("inspector");
   const [mounted, setMounted] = useState(false);
+  const [showAllWhyNotTrade, setShowAllWhyNotTrade] = useState(false);
+  const [brainPulse, setBrainPulse] = useState(false);
+  const prevTsRef = useRef<string>("");
+  const prevConfidenceRef = useRef<{ signal_strength: number; agreement: number; regime_fit: number; historical_edge: number; final: number }>({
+    signal_strength: 0,
+    agreement: 0,
+    regime_fit: 0,
+    historical_edge: 0,
+    final: 0,
+  });
 
   useEffect(() => {
     setMounted(true);
@@ -86,6 +97,18 @@ export function DecisionTerminal() {
   useEffect(() => {
     setRiskDraft(toRiskDraft(payload.meta.controls.risk));
   }, [payload.meta.controls.risk]);
+
+  useEffect(() => {
+    if (!d.signal.timestamp || d.signal.timestamp === "--") return;
+    if (prevTsRef.current && prevTsRef.current !== d.signal.timestamp) {
+      prevTsRef.current = d.signal.timestamp;
+      setBrainPulse(true);
+      const id = window.setTimeout(() => setBrainPulse(false), 420);
+      return () => window.clearTimeout(id);
+    }
+    prevTsRef.current = d.signal.timestamp;
+    return undefined;
+  }, [d.signal.timestamp]);
 
   const equityCurve = useMemo(() => payload.performance.equity_curve || [], [payload.performance.equity_curve]);
 
@@ -138,13 +161,36 @@ export function DecisionTerminal() {
         .filter((row) => row.checks.some((check) => !check.passed)).length,
     [payload.why_not_trade],
   );
+  const visibleRiskRows = useMemo(
+    () => (showAllWhyNotTrade ? filteredRiskChecks : filteredRiskChecks.slice(0, 3)),
+    [filteredRiskChecks, showAllWhyNotTrade],
+  );
 
   const pnlSpark = d.account.pnl_spark || [];
+  const finalConfidence = Number(d.signal.confidence?.final ?? 0);
+  const confidenceParts = d.signal.confidence;
+  const confidenceTrend = {
+    signal_strength: Number(confidenceParts.signal_strength ?? 0) - Number(prevConfidenceRef.current.signal_strength ?? 0),
+    agreement: Number(confidenceParts.agreement ?? 0) - Number(prevConfidenceRef.current.agreement ?? 0),
+    regime_fit: Number(confidenceParts.regime_fit ?? 0) - Number(prevConfidenceRef.current.regime_fit ?? 0),
+    historical_edge: Number(confidenceParts.historical_edge ?? 0) - Number(prevConfidenceRef.current.historical_edge ?? 0),
+  };
+  useEffect(() => {
+    prevConfidenceRef.current = {
+      signal_strength: Number(confidenceParts.signal_strength ?? 0),
+      agreement: Number(confidenceParts.agreement ?? 0),
+      regime_fit: Number(confidenceParts.regime_fit ?? 0),
+      historical_edge: Number(confidenceParts.historical_edge ?? 0),
+      final: Number(confidenceParts.final ?? 0),
+    };
+  }, [confidenceParts]);
+  const strategyHealthRows = Object.entries(payload.strategy_health || {}).sort((a, b) => Number(b[1]?.health_score ?? 0) - Number(a[1]?.health_score ?? 0));
+  const riskDebug = payload.risk_debug;
   const streamRows = debugMode ? filteredThoughtStream : filteredThoughtStream.slice(-24);
   const alerts = payload.alerts || [];
 
   return (
-    <main className="min-h-screen bg-terminal-bg px-4 py-4 text-terminal-text md:px-6">
+    <main className={`min-h-screen bg-terminal-bg px-4 py-4 text-terminal-text md:px-6 ${replayMode ? "replay-tint" : ""}`}>
       <div className="mb-2 space-y-1">
         {alerts.map((alert, idx) => (
           <div
@@ -169,12 +215,16 @@ export function DecisionTerminal() {
         ) : null}
       </div>
 
-      <header className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl2 border border-terminal-border bg-terminal-panel px-4 py-3 shadow-panel">
+      <header className="topbar-glass mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl2 px-4 py-3 shadow-panel">
         <div>
           <h1 className="text-lg font-semibold tracking-[0.02em]">Decision Intelligence Terminal</h1>
           <p className="text-xs text-terminal-muted">Real-time bot cognition and execution diagnostics</p>
         </div>
         <div className="flex items-center gap-2">
+          <span className="rounded border border-terminal-border/70 bg-black/20 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-terminal-muted">
+            Last updated {payload.meta.last_tick_age_sec == null ? "--" : `${Math.round(payload.meta.last_tick_age_sec * 1000)} ms ago`}
+          </span>
+          {replayMode ? <Badge tone="neutral" className="animate-softPulse">REPLAY MODE</Badge> : null}
           <Badge tone={payload.meta.connected ? "buy" : "blocked"}>{payload.meta.connection_event}</Badge>
           <button
             className="rounded-md border border-terminal-border px-3 py-1.5 text-xs uppercase tracking-[0.08em] text-terminal-secondary transition hover:border-terminal-neutral"
@@ -199,19 +249,19 @@ export function DecisionTerminal() {
       </header>
 
       <section className="terminal-grid mb-3">
-        <Card className="p-4">
+        <Card className={`p-4 ${brainPulse ? "tick-pulse" : ""}`}>
           <CardTitle className="flex items-center gap-2"><Radar className="h-4 w-4" /> Brain Panel</CardTitle>
           <CardBody>
             <div className="flex flex-wrap items-end gap-3">
               <div>
                 <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Signal</p>
-                <p className={`text-4xl font-bold ${d.signal.side === "BUY" ? "text-terminal-buy" : d.signal.side === "SELL" ? "text-terminal-sell" : "text-terminal-neutral"}`}>
+                <p className={`glow-number text-5xl font-bold ${d.signal.side === "BUY" ? "text-terminal-buy" : d.signal.side === "SELL" ? "text-terminal-sell" : "text-terminal-neutral"}`}>
                   {d.signal.side}
                 </p>
               </div>
               <div>
                 <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Action</p>
-                <p className={`text-3xl font-bold ${d.decision.action === "BLOCKED" ? "text-terminal-blocked" : d.decision.action === "EXECUTE" ? "text-terminal-buy" : "text-terminal-neutral"}`}>
+                <p className={`fade-slide glow-number text-4xl font-bold ${d.decision.action === "BLOCKED" ? "text-terminal-blocked" : d.decision.action === "EXECUTE" ? "text-terminal-buy" : "text-terminal-neutral"}`}>
                   {d.decision.action}
                 </p>
               </div>
@@ -222,14 +272,32 @@ export function DecisionTerminal() {
             <div className="mt-4">
               <div className="mb-1 flex items-center justify-between text-xs text-terminal-secondary">
                 <span>Confidence</span>
-                <span>{(d.signal.confidence * 100).toFixed(1)}%</span>
+                <span>{(finalConfidence * 100).toFixed(1)}%</span>
               </div>
-              <div className="h-2 rounded-full bg-terminal-border">
+              <div className="relative h-2.5 overflow-hidden rounded-full bg-terminal-border/70">
                 <div
-                  className={`h-2 rounded-full transition-all duration-500 ${d.signal.side === "BUY" ? "bg-terminal-buy" : d.signal.side === "SELL" ? "bg-terminal-sell" : "bg-terminal-neutral"}`}
-                  style={{ width: `${Math.min(100, Math.max(0, d.signal.confidence * 100))}%` }}
+                  className={`h-2.5 rounded-full transition-all duration-500 ${d.signal.side === "BUY" ? "bg-gradient-to-r from-terminal-buy/70 to-terminal-buy" : d.signal.side === "SELL" ? "bg-gradient-to-r from-terminal-sell/65 to-terminal-sell" : "bg-gradient-to-r from-terminal-neutral/65 to-terminal-neutral"}`}
+                  style={{ width: `${Math.min(100, Math.max(0, finalConfidence * 100))}%` }}
                 />
+                <div className="pointer-events-none absolute inset-y-0 w-10 bg-gradient-to-r from-transparent via-white/30 to-transparent opacity-35 animate-shimmer" />
               </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] md:grid-cols-4">
+              {([
+                ["Signal", Number(confidenceParts.signal_strength ?? 0), confidenceTrend.signal_strength],
+                ["Agreement", Number(confidenceParts.agreement ?? 0), confidenceTrend.agreement],
+                ["Regime", Number(confidenceParts.regime_fit ?? 0), confidenceTrend.regime_fit],
+                ["Edge", Number(confidenceParts.historical_edge ?? 0), confidenceTrend.historical_edge],
+              ] as const).map(([label, value, trend]) => (
+                <div key={label} className="rounded border border-terminal-border/70 bg-black/20 px-2 py-2">
+                  <p className="uppercase tracking-[0.08em] text-terminal-muted">{label}</p>
+                  <p className="mt-1 flex items-center gap-1 text-terminal-secondary">
+                    <span>{Math.round(value * 100)}%</span>
+                    {trend >= 0 ? <ArrowUpRight className="h-3 w-3 text-terminal-buy" /> : <ArrowDownRight className="h-3 w-3 text-terminal-sell" />}
+                  </p>
+                </div>
+              ))}
             </div>
 
             <div className="mt-3 h-[70px] rounded-md border border-terminal-border bg-black/20 p-2" title="Recent signal confidence trend">
@@ -265,7 +333,21 @@ export function DecisionTerminal() {
             ))}
           </div>
           <CardBody className="space-y-2">
-            {filteredRiskChecks.slice(-8).map((row, rowIdx) => (
+            {(payload.hold_reasons || []).map((reason, idx) => (
+              <div key={`${reason.reason}-${idx}`} className="fade-slide rounded border border-terminal-border/70 bg-black/20 px-3 py-2">
+                <div className="mb-1 flex items-center justify-between text-[11px]">
+                  <span className="text-terminal-secondary">{reason.reason}</span>
+                  <span className="text-terminal-muted">{Math.round(Number(reason.impact || 0) * 100)}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-terminal-border/70">
+                  <div
+                    className="h-2 rounded-full bg-gradient-to-r from-terminal-sell/55 via-terminal-sell/75 to-terminal-sell transition-all duration-500"
+                    style={{ width: `${Math.min(100, Math.max(0, Number(reason.impact || 0) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+            {visibleRiskRows.map((row, rowIdx) => (
               <div key={`${row.ts}-${rowIdx}`} className="rounded-md border border-terminal-border px-3 py-2">
                 <div>
                   <p className="text-[11px] uppercase tracking-[0.08em] text-terminal-muted">{row.ts}</p>
@@ -286,6 +368,17 @@ export function DecisionTerminal() {
                 </div>
               </div>
             ))}
+            {filteredRiskChecks.length > 3 ? (
+              <button
+                className="mt-1 inline-flex items-center gap-1 rounded border border-terminal-border px-2 py-1 text-[11px] text-terminal-secondary transition hover:border-terminal-neutral hover:text-terminal-neutral"
+                onClick={() => setShowAllWhyNotTrade((v) => !v)}
+                aria-expanded={showAllWhyNotTrade}
+                title={showAllWhyNotTrade ? "Collapse Why Not Trade list" : "Expand Why Not Trade list"}
+              >
+                {showAllWhyNotTrade ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                <span>{showAllWhyNotTrade ? "Show less" : `Expand more (${filteredRiskChecks.length - 3} more)`}</span>
+              </button>
+            ) : null}
           </CardBody>
         </Card>
       </section>
@@ -522,6 +615,81 @@ export function DecisionTerminal() {
         />
       </section>
 
+      <section className="mb-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+        <Card className="p-4">
+          <CardTitle>Strategy Health</CardTitle>
+          <CardBody className="space-y-2">
+            {strategyHealthRows.length === 0 ? (
+              <div className="rounded border border-terminal-border px-3 py-2 text-xs text-terminal-muted">No strategy health data yet.</div>
+            ) : (
+              strategyHealthRows.map(([name, row]) => {
+                const health = Number(row?.health_score ?? 0);
+                const status = String(row?.status ?? "inactive");
+                const statusTone = status === "healthy" ? "buy" : status === "degrading" ? "blocked" : "neutral";
+                return (
+                  <div key={name} className="rounded border border-terminal-border px-3 py-2 transition hover:border-terminal-neutral/50 hover:shadow-neonSoft">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-sm text-terminal-text">{name.replaceAll("_", " ")}</p>
+                      <Badge tone={statusTone}>{status}</Badge>
+                    </div>
+                    <div className="mb-2 h-2 rounded-full bg-terminal-border">
+                      <div
+                        className={`h-2 rounded-full transition-all duration-500 ${health >= 0.6 ? "bg-terminal-buy" : health >= 0.35 ? "bg-terminal-blocked" : "bg-terminal-neutral"}`}
+                        style={{ width: `${Math.min(100, Math.max(0, health * 100))}%` }}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-terminal-secondary md:grid-cols-4">
+                      <div>Health {Math.round(health * 100)}%</div>
+                      <div>Part {(Number(row?.participation_rate ?? 0) * 100).toFixed(1)}%</div>
+                      <div>Hit {(Number(row?.recent_hit_rate ?? 0) * 100).toFixed(1)}%</div>
+                      <div>Edge {(Number(row?.contribution_score ?? 0) * 100).toFixed(1)}%</div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </CardBody>
+        </Card>
+
+        <Card className="p-4">
+          <CardTitle>Risk Gate Debugger</CardTitle>
+          <CardBody className="space-y-2">
+            {[
+              { key: "confidence_gate", label: "Confidence Gate", value: Number(riskDebug?.confidence_gate?.value ?? 0), threshold: Number(riskDebug?.confidence_gate?.threshold ?? 0), passed: Boolean(riskDebug?.confidence_gate?.passed), delta: Number(riskDebug?.confidence_gate?.delta ?? 0) },
+              { key: "position_limit", label: "Position Limit", value: Number(riskDebug?.position_limit?.current ?? 0), threshold: Number(riskDebug?.position_limit?.max ?? 0), passed: Boolean(riskDebug?.position_limit?.passed), delta: Number(riskDebug?.position_limit?.delta ?? 0) },
+              { key: "drawdown_guard", label: "Drawdown Guard", value: Number(riskDebug?.drawdown_guard?.current_dd ?? 0), threshold: Number(riskDebug?.drawdown_guard?.max_dd ?? 0), passed: Boolean(riskDebug?.drawdown_guard?.passed), delta: Number(riskDebug?.drawdown_guard?.delta ?? 0) },
+            ].map((gate) => (
+              <div key={gate.key} className="rounded border border-terminal-border px-3 py-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-sm text-terminal-text">{gate.label}</p>
+                  <div title={gate.passed ? "Gate passed" : "Gate failed"}>
+                    {gate.passed ? <CheckCircle2 className="h-4 w-4 text-terminal-buy" /> : <CircleX className="h-4 w-4 text-terminal-sell" />}
+                  </div>
+                </div>
+                {(() => {
+                  const barMax = Math.max(gate.value, gate.threshold, 1e-9);
+                  const valuePct = (gate.value / barMax) * 100;
+                  const thresholdPct = (gate.threshold / barMax) * 100;
+                  return (
+                    <div className="relative mt-2 h-2.5 rounded-full bg-terminal-border/75">
+                      <div className={`h-2.5 rounded-full transition-all duration-500 ${gate.passed ? "bg-gradient-to-r from-terminal-buy/60 to-terminal-buy" : "bg-gradient-to-r from-terminal-sell/60 to-terminal-sell"}`} style={{ width: `${Math.min(100, Math.max(0, valuePct))}%` }} />
+                      <div className="absolute inset-y-0 w-[2px] bg-terminal-blocked/85" style={{ left: `${Math.min(100, Math.max(0, thresholdPct))}%` }} />
+                    </div>
+                  );
+                })()}
+                <div className="text-[11px] text-terminal-secondary">
+                  <p>value {fmt(gate.value)} / threshold {fmt(gate.threshold)}</p>
+                  <p className={gate.delta >= 0 ? "text-terminal-buy" : "text-terminal-sell"}>delta {fmt(gate.delta)}</p>
+                </div>
+              </div>
+            ))}
+            <div className="rounded border border-terminal-border px-3 py-2 text-[11px] text-terminal-muted">
+              Hold blockers: {(payload.hold_reasons || []).map((r) => `${r.reason} (${Math.round(Number(r.impact || 0) * 100)}%)`).join(", ") || "none"}
+            </div>
+          </CardBody>
+        </Card>
+      </section>
+
       <AdvancedPanels
         payload={payload}
         advancedTab={advancedTab}
@@ -535,6 +703,7 @@ export function DecisionTerminal() {
         replayPlaying={replayPlaying}
         setReplayPlaying={setReplayPlaying}
         replayStep={replayStep}
+        replaySeek={replaySeek}
         activeHistory={activeHistory}
       />
     </main>

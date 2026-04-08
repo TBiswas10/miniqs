@@ -5,6 +5,14 @@ type RiskCheck = {
   reason: string;
 };
 
+type ConfidenceBreakdown = {
+  signal_strength: number;
+  agreement: number;
+  regime_fit: number;
+  historical_edge: number;
+  final: number;
+};
+
 type HistoryRow = {
   ts: string;
   symbol: string;
@@ -47,7 +55,7 @@ export type DecisionPayload = {
   decision: {
     signal: {
       side: "BUY" | "SELL" | "HOLD";
-      confidence: number;
+      confidence: ConfidenceBreakdown;
       strategy: string;
       reason: string;
       timestamp: string;
@@ -125,6 +133,10 @@ export type DecisionPayload = {
     checks: RiskCheck[];
     reason: string;
   }>;
+  hold_reasons: Array<{
+    reason: string;
+    impact: number;
+  }>;
   strategy_intelligence: Array<{
     strategy: string;
     trades: number;
@@ -133,6 +145,19 @@ export type DecisionPayload = {
     confidence_avg: number;
     trend: Array<{ ts: string; pnl: number; confidence: number }>;
   }>;
+  strategy_health: Record<string, {
+    participation_rate: number;
+    avg_confidence: number;
+    recent_hit_rate: number;
+    contribution_score: number;
+    health_score: number;
+    status: "healthy" | "degrading" | "inactive";
+  }>;
+  risk_debug: {
+    confidence_gate: { value: number; threshold: number; passed: boolean; delta: number };
+    position_limit: { current: number; max: number; passed: boolean; delta: number };
+    drawdown_guard: { current_dd: number; max_dd: number; passed: boolean; delta: number };
+  };
   decision_inspector: {
     full_object: Record<string, unknown>;
     features: Record<string, unknown>;
@@ -148,6 +173,12 @@ export type DecisionPayload = {
     simulated_pnl: number;
     reason_blocked: string;
   }>;
+  counterfactual_result: {
+    changed_actions: number;
+    pnl_original: number;
+    pnl_counterfactual: number;
+    delta: number;
+  };
   performance: {
     win_rate: number;
     avg_profit: number;

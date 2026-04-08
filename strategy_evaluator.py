@@ -97,6 +97,9 @@ def evaluate_signals_v2(
             "applied_threshold": round(float(threshold), 6),
             "applied_profile": profile,
             "dominance_cap": float(dominance_cap),
+            "actionable_count": 0,
+            "max_actionable_confidence": 0.0,
+            "max_side_score": 0.0,
         }
         if return_telemetry:
             return None, empty_telemetry
@@ -140,6 +143,9 @@ def evaluate_signals_v2(
         "applied_threshold": round(float(threshold), 6),
         "applied_profile": profile,
         "dominance_cap": float(dominance_cap),
+        "actionable_count": len(actionable),
+        "max_actionable_confidence": round(float(max((s.confidence for s in actionable), default=0.0)), 6),
+        "max_side_score": round(float(max(buy_score, sell_score)), 6),
     }
 
     if max(buy_score, sell_score) < threshold:

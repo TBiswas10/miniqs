@@ -6,7 +6,14 @@ import { API_BASE, WS_BASE } from "@/lib/config";
 
 const fallback: DecisionPayload = {
   decision: {
-    signal: { side: "HOLD", confidence: 0, strategy: "pending", reason: "Waiting for stream", timestamp: "--", trend: [] },
+    signal: {
+      side: "HOLD",
+      confidence: { signal_strength: 0, agreement: 0, regime_fit: 0, historical_edge: 0, final: 0 },
+      strategy: "pending",
+      reason: "Waiting for stream",
+      timestamp: "--",
+      trend: [],
+    },
     checks: [],
     decision: { action: "HOLD", stage: "idle", reason: "Waiting for stream", pipeline: { signal: "idle", decision: "idle", sent: "idle", filled: "idle" } },
     position: { symbol: "BTC/USD", size: 0, price: 0 },
@@ -36,9 +43,17 @@ const fallback: DecisionPayload = {
   thought_stream: [],
   history: [],
   why_not_trade: [],
+  hold_reasons: [],
   strategy_intelligence: [],
+  strategy_health: {},
+  risk_debug: {
+    confidence_gate: { value: 0, threshold: 0.35, passed: false, delta: 0 },
+    position_limit: { current: 0, max: 1, passed: true, delta: 1 },
+    drawdown_guard: { current_dd: 0, max_dd: 1, passed: true, delta: 1 },
+  },
   decision_inspector: { full_object: {}, features: {}, risk_checks: [], reasoning: "--" },
   counterfactuals: [],
+  counterfactual_result: { changed_actions: 0, pnl_original: 0, pnl_counterfactual: 0, delta: 0 },
   performance: { win_rate: 0, avg_profit: 0, max_drawdown: 0, sharpe_approx: 0, equity_curve: [] },
   replay: { cursor: 0, length: 0, timeline: [] },
   alerts: [],
@@ -218,6 +233,11 @@ export function useDecisionStream() {
     setReplayCursor((cursor) => Math.min(Math.max(cursor + delta, 0), Math.max(payload.replay.timeline.length - 1, 0)));
   };
 
+  const replaySeek = (cursor: number) => {
+    const max = Math.max(payload.replay.timeline.length - 1, 0);
+    setReplayCursor(Math.min(Math.max(cursor, 0), max));
+  };
+
   return {
     payload,
     debugMode,
@@ -241,6 +261,7 @@ export function useDecisionStream() {
     replayPlaying,
     setReplayPlaying,
     replayStep,
+    replaySeek,
     controlError,
     clearControlError: () => setControlError(null),
     setTradingEnabled,

@@ -18,6 +18,7 @@ type Props = {
   replayPlaying: boolean;
   setReplayPlaying: React.Dispatch<React.SetStateAction<boolean>>;
   replayStep: (delta: number) => void;
+  replaySeek: (cursor: number) => void;
   activeHistory: DecisionPayload["history"];
 };
 
@@ -40,10 +41,11 @@ export function AdvancedPanels({
   replayPlaying,
   setReplayPlaying,
   replayStep,
+  replaySeek,
   activeHistory,
 }: Props) {
   return (
-    <section className="mb-3 rounded-xl2 border border-terminal-border bg-terminal-panel p-3 shadow-panel">
+    <section className="mb-3 rounded-xl2 glass-panel p-3 shadow-panel">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         {([
           ["inspector", "Decision Inspector"],
@@ -53,17 +55,18 @@ export function AdvancedPanels({
         ] as const).map(([id, label]) => (
           <button
             key={id}
-            className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${advancedTab === id ? "border-terminal-neutral text-terminal-neutral" : "border-terminal-border text-terminal-muted"}`}
+            className={`relative rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.08em] transition ${advancedTab === id ? "border-terminal-neutral/60 bg-terminal-neutral/10 text-terminal-neutral shadow-neonSoft" : "border-terminal-border text-terminal-muted hover:border-terminal-neutral/40 hover:text-terminal-secondary"}`}
             onClick={() => setAdvancedTab(id)}
             title={label}
           >
             {label}
+            {advancedTab === id ? <span className="absolute -bottom-[6px] left-3 right-3 h-[2px] rounded-full bg-terminal-neutral/80" /> : null}
           </button>
         ))}
       </div>
 
       {advancedTab === "inspector" && (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+        <div className="fade-slide grid grid-cols-1 gap-3 xl:grid-cols-2">
           <div className="rounded-md border border-terminal-border bg-black/20 p-3">
             <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Decision Inspector</p>
             <p className="mt-1 text-sm text-terminal-secondary">{selectedDecision?.reason ?? payload.decision_inspector.reasoning}</p>
@@ -89,7 +92,7 @@ export function AdvancedPanels({
       )}
 
       {advancedTab === "counterfactual" && (
-        <div className="rounded-md border border-terminal-border bg-black/20 p-3">
+        <div className="fade-slide rounded-md border border-terminal-border bg-black/20 p-3">
           <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Blocked Trade Simulation</p>
           <div className="mt-2 h-[240px] overflow-auto rounded border border-terminal-border">
             <table className="w-full text-left text-xs">
@@ -121,7 +124,7 @@ export function AdvancedPanels({
       )}
 
       {advancedTab === "performance" && (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+        <div className="fade-slide grid grid-cols-1 gap-3 xl:grid-cols-2">
           <div className="rounded-md border border-terminal-border bg-black/20 p-3">
             <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Performance Metrics</p>
             <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
@@ -167,7 +170,7 @@ export function AdvancedPanels({
       )}
 
       {advancedTab === "replay" && (
-        <div className="rounded-md border border-terminal-border bg-black/20 p-3">
+        <div className="fade-slide rounded-md border border-terminal-border bg-black/20 p-3">
           <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Replay System</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
@@ -191,6 +194,23 @@ export function AdvancedPanels({
               <StepForward className="h-4 w-4" />
             </button>
             <span className="text-xs text-terminal-muted">Tick {replayCursor + 1} / {payload.replay.length}</span>
+            {replayMode ? <Badge tone="neutral" className="animate-softPulse">REPLAY MODE</Badge> : null}
+          </div>
+          <div className="mt-3 rounded border border-terminal-border/70 bg-black/25 px-3 py-2">
+            <input
+              type="range"
+              min={0}
+              max={Math.max(payload.replay.length - 1, 0)}
+              value={replayCursor}
+              onChange={(e) => replaySeek(Number(e.target.value))}
+              className="h-2 w-full cursor-pointer appearance-none rounded-full bg-terminal-border accent-terminal-neutral"
+              title="Replay timeline slider"
+            />
+            <div className="mt-1 flex items-center justify-between text-[10px] text-terminal-muted">
+              <span>Start</span>
+              <span>Mid</span>
+              <span>Live</span>
+            </div>
           </div>
           <div className="mt-2 rounded border border-terminal-border p-2 text-xs text-terminal-secondary">
             Pipeline at cursor: {JSON.stringify(activeHistory[Math.min(replayCursor, Math.max(activeHistory.length - 1, 0))]?.raw ?? {}, null, 0)}
