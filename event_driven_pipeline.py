@@ -22,7 +22,7 @@ from performance import PerformanceTracker
 from portfolio import Portfolio
 from risk_manager import RiskConfig, RiskEngine
 from strategies import StrategyRegistry, default_strategy_registry, generate_weighted_signals
-from strategy_evaluator import evaluate_signals
+from strategy_evaluator import evaluate_signals_v2
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,9 @@ class AsyncEventDrivenPipeline:
         self.last_trade_timestamp: str | None = None
         self.risk_engine: RiskEngine | None = None
         self.strategy_registry: StrategyRegistry = default_strategy_registry()
+        self.strategy_selection_counts: Dict[str, int] = {}
+        self.risk_checks = 0
+        self.risk_blocks = 0
 
     async def _ingestion_worker(self, feed: DataFeed) -> None:
         stream = feed.stream()
@@ -134,8 +137,15 @@ class AsyncEventDrivenPipeline:
                 logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
                 logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
 
-                chosen = evaluate_signals([mr, mo, vb], confidence_threshold=self.confidence_threshold)
+                chosen = evaluate_signals_v2(
+                    [mr, mo, vb],
+                    confidence_threshold=self.confidence_threshold,
+                    profile="default",
+                    strategy_normalization={"mean_reversion": 1.05, "momentum": 0.9, "volatility_breakout": 1.1},
+                    dominance_cap=0.65,
+                )
                 if chosen is not None:
+                    self.strategy_selection_counts[chosen.strategy] = self.strategy_selection_counts.get(chosen.strategy, 0) + 1
                     trade = {
                         "action": chosen.action,
                         "size": 1.0,
@@ -178,6 +188,7 @@ class AsyncEventDrivenPipeline:
             if self.risk_engine is None:
                 raise RuntimeError("risk engine not initialized")
 
+            self.risk_checks += 1
             allow, reason, adjusted_trade, _ = await asyncio.to_thread(
                 self.risk_engine.assess_trade,
                 event.trade,
@@ -192,6 +203,7 @@ class AsyncEventDrivenPipeline:
                     )
                 )
             else:
+                self.risk_blocks += 1
                 logger.log_risk_block(reason, str(event.trade))
                 if "strategy_kill_switch" in reason:
                     feedback.strategy_enabled[event.strategy] = False
@@ -305,9 +317,12 @@ class AsyncEventDrivenPipeline:
                 "win_rate": float(metrics["win_rate"]),
                 "max_drawdown": float(metrics["max_drawdown"]),
                 "sharpe_ratio": float(metrics["sharpe_ratio"]),
-                "mean_reversion_weight": float(feedback.strategy_weights["mean_reversion"]),
-                "momentum_weight": float(feedback.strategy_weights["momentum"]),
-                "volatility_breakout_weight": float(feedback.strategy_weights.get("volatility_breakout", 0.0)),
+                "trade_count": float(metrics["trade_count"]),
+                "strategy_selection_counts": {k: int(v) for k, v in self.strategy_selection_counts.items()},
+                "risk_checks": float(self.risk_checks),
+                "risk_blocks": float(self.risk_blocks),
+                "risk_block_rate": float(self.risk_blocks / self.risk_checks) if self.risk_checks > 0 else 0.0,
+                "strategy_weights": {k: float(v) for k, v in feedback.strategy_weights.items()},
             }
 
 
