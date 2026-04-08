@@ -29,8 +29,8 @@ from logger import QuantLogger
 from main import FeedbackLoop
 from performance import PerformanceTracker
 from portfolio import Portfolio
-from risk_manager import check_risk
-from strategies import FunctionStrategy, StrategyRegistry, generate_weighted_signals
+from risk_manager import RiskConfig, check_risk
+from strategies import FunctionStrategy, StrategyRegistry, default_strategy_registry, generate_weighted_signals
 from strategies.mean_reversion import generate_signal as mean_reversion_signal  # backward-compatible test patch target
 from strategies.momentum import generate_signal as momentum_signal  # backward-compatible test patch target
 from strategies.volatility_breakout import generate_signal as volatility_breakout_signal  # backward-compatible test patch target
@@ -49,17 +49,14 @@ DASHBOARD_CSV_FIELDS = [
     "sharpe_ratio",
     "equity",
     "executed_trades",
-    "weights_mr",
-    "weights_mo",
-    "weights_vb",
+    "weights_json",
 ]
 
-DEFAULT_STRATEGY_NORMALIZATION = {"mean_reversion": 1.05, "momentum": 0.9, "volatility_breakout": 1.1}
-DEFAULT_DOMINANCE_CAP = 0.65
+DEFAULT_DYNAMIC_RISK = RiskConfig()
 
 
 def _strategy_registry() -> StrategyRegistry:
-    registry = StrategyRegistry()
+    registry = default_strategy_registry()
     registry.register(
         FunctionStrategy(
             name="mean_reversion",
@@ -79,6 +76,16 @@ def _strategy_registry() -> StrategyRegistry:
         )
     )
     return registry
+
+
+def _strategy_params(name: str, cfg: AlpacaConfig) -> Dict[str, float]:
+    if name == "mean_reversion":
+        return {"entry_threshold": float(cfg.mr_threshold)}
+    if name == "momentum":
+        return {"momentum_threshold": float(cfg.mom_threshold)}
+    if name == "volatility_breakout":
+        return {"breakout_factor": float(cfg.vb_breakout_factor)}
+    return {}
 
 
 def _feature_engines(config: AlpacaConfig) -> Dict[str, FeatureEngine]:
@@ -218,7 +225,40 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
     control_risk = control_state.get("risk", {}) if isinstance(control_state.get("risk"), dict) else {}
     dynamic_conf_threshold = float(control_risk.get("confidence_threshold", runtime.cfg.confidence_threshold))
     dynamic_max_position = float(control_risk.get("max_position_size", runtime.cfg.max_position_size))
-    dynamic_max_daily_loss = float(control_risk.get("max_daily_loss", runtime.cfg.max_loss_per_session))
+    dynamic_max_loss_per_session = float(control_risk.get("max_loss_per_session", runtime.cfg.max_loss_per_session))
+    dynamic_max_daily_loss = float(control_risk.get("max_daily_loss", dynamic_max_loss_per_session))
+    dynamic_risk_per_trade = float(control_risk.get("risk_per_trade", runtime.cfg.risk_per_trade))
+    dynamic_daily_loss_limit = float(control_risk.get("daily_loss_limit", runtime.cfg.daily_loss_limit))
+    dynamic_max_exposure = float(control_risk.get("max_exposure", DEFAULT_DYNAMIC_RISK.max_exposure))
+    dynamic_max_concurrent_positions = int(
+        control_risk.get("max_concurrent_positions", DEFAULT_DYNAMIC_RISK.max_concurrent_positions)
+    )
+    dynamic_cooldown_seconds = int(control_risk.get("cooldown_seconds", runtime.cfg.cooldown_seconds))
+    dynamic_portfolio_drawdown_limit = float(
+        control_risk.get("portfolio_drawdown_limit", DEFAULT_DYNAMIC_RISK.portfolio_drawdown_limit)
+    )
+    dynamic_per_strategy_drawdown_limit = float(
+        control_risk.get("per_strategy_drawdown_limit", DEFAULT_DYNAMIC_RISK.per_strategy_drawdown_limit)
+    )
+    dynamic_extreme_loss_kill_switch = float(
+        control_risk.get("extreme_loss_kill_switch", DEFAULT_DYNAMIC_RISK.extreme_loss_kill_switch)
+    )
+    dynamic_strategy_kill_loss = float(control_risk.get("strategy_kill_loss", DEFAULT_DYNAMIC_RISK.strategy_kill_loss))
+    dynamic_vol_target = float(control_risk.get("vol_target", DEFAULT_DYNAMIC_RISK.vol_target))
+    dynamic_vol_floor = float(control_risk.get("vol_floor", DEFAULT_DYNAMIC_RISK.vol_floor))
+    dynamic_vol_ceiling = float(control_risk.get("vol_ceiling", DEFAULT_DYNAMIC_RISK.vol_ceiling))
+    dynamic_low_vol_multiplier = float(
+        control_risk.get("low_vol_multiplier", DEFAULT_DYNAMIC_RISK.low_vol_multiplier)
+    )
+    dynamic_high_vol_multiplier = float(
+        control_risk.get("high_vol_multiplier", DEFAULT_DYNAMIC_RISK.high_vol_multiplier)
+    )
+    dynamic_min_trade_size = float(control_risk.get("min_trade_size", DEFAULT_DYNAMIC_RISK.min_trade_size))
+    dynamic_max_trade_size = float(control_risk.get("max_trade_size", DEFAULT_DYNAMIC_RISK.max_trade_size))
+    if dynamic_min_trade_size > dynamic_max_trade_size:
+        dynamic_min_trade_size, dynamic_max_trade_size = dynamic_max_trade_size, dynamic_min_trade_size
+
+    dynamic_trade_size = max(dynamic_min_trade_size, min(dynamic_max_trade_size, float(runtime.cfg.trade_size)))
     strategy_switches = control_state.get("strategies", {}) if isinstance(control_state.get("strategies"), dict) else {}
 
     base_trace: Dict[str, object] = {
@@ -263,42 +303,35 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         return
 
     stage = "signals_generated"
-    weights = runtime.feedback.strategy_weights
+    strategy_names = list(runtime.strategy_registry.list_names())
+    enabled_strategies = {name: bool(strategy_switches.get(name, True)) for name in strategy_names}
+    weights = dict(runtime.feedback.strategy_weights)
+    for strategy_name in strategy_names:
+        weights.setdefault(strategy_name, 1.0)
+
     signals = generate_weighted_signals(
         features=snap,
         registry=runtime.strategy_registry,
         weights=weights,
-        enabled={
-            "mean_reversion": bool(strategy_switches.get("mean_reversion", True)),
-            "momentum": bool(strategy_switches.get("momentum", True)),
-            "volatility_breakout": bool(strategy_switches.get("volatility_breakout", True)),
-        },
-        params={
-            "mean_reversion": {"entry_threshold": runtime.cfg.mr_threshold},
-            "momentum": {"momentum_threshold": runtime.cfg.mom_threshold},
-            "volatility_breakout": {"breakout_factor": runtime.cfg.vb_breakout_factor},
-        },
+        enabled=enabled_strategies,
+        params={name: _strategy_params(name, runtime.cfg) for name in strategy_names},
     )
-    mr = signals["mean_reversion"]
-    mo = signals["momentum"]
-    vb = signals["volatility_breakout"]
+    for signal in signals.values():
+        runtime.logger.log_signal(signal.strategy, signal.action, signal.confidence, signal.reason)
 
-    runtime.logger.log_signal(mr.strategy, mr.action, mr.confidence, mr.reason)
-    runtime.logger.log_signal(mo.strategy, mo.action, mo.confidence, mo.reason)
-    runtime.logger.log_signal(vb.strategy, vb.action, vb.confidence, vb.reason)
-
-    signal_trace = (
-        f"price={tick.price:.4f} "
-        f"mr={mr.action}:{mr.confidence:.3f}:{mr.reason} "
-        f"mo={mo.action}:{mo.confidence:.3f}:{mo.reason} "
-        f"vb={vb.action}:{vb.confidence:.3f}:{vb.reason}"
+    signal_trace = "price={:.4f} {}".format(
+        tick.price,
+        " ".join(
+            f"{name}={signal.action}:{signal.confidence:.3f}:{signal.reason}"
+            for name, signal in signals.items()
+        ),
     )
     signal_payload = {
-        "mean_reversion": {"action": mr.action, "confidence": mr.confidence, "reason": mr.reason},
-        "momentum": {"action": mo.action, "confidence": mo.confidence, "reason": mo.reason},
-        "volatility_breakout": {"action": vb.action, "confidence": vb.confidence, "reason": vb.reason},
+        name: {"action": signal.action, "confidence": signal.confidence, "reason": signal.reason}
+        for name, signal in signals.items()
     }
 
+<<<<<<< codex/fix-critical-issues-sk8q6t
     chosen = _select_signal(
         mr=mr,
         mo=mo,
@@ -306,13 +339,12 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         confidence_threshold=dynamic_conf_threshold,
         profile=runtime.cfg.evaluation_profile,
     )
+=======
+    chosen = evaluate_signals(list(signals.values()), confidence_threshold=dynamic_conf_threshold)
+>>>>>>> main
     if chosen is None:
         stage = "no_signal"
-        if (
-            not bool(strategy_switches.get("mean_reversion", True))
-            and not bool(strategy_switches.get("momentum", True))
-            and not bool(strategy_switches.get("volatility_breakout", True))
-        ):
+        if strategy_names and all(not enabled_strategies.get(name, True) for name in strategy_names):
             no_signal_reason = "all_strategies_disabled"
         else:
             no_signal_reason = "confidence_below_threshold"
@@ -378,7 +410,7 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
     signal_trace += f" chosen={chosen.strategy}:{chosen.action}:{chosen.confidence:.3f}:{chosen.reason}"
     trade = {
         "action": chosen.action,
-        "size": runtime.cfg.trade_size,
+        "size": dynamic_trade_size,
         "confidence": chosen.confidence,
         "price": tick.price,
         "timestamp": tick.timestamp.isoformat(),
@@ -390,10 +422,23 @@ def _on_market_event(event: MarketEvent, bus: EventBus, runtime: AlpacaRuntime) 
         "last_trade_timestamp": runtime.last_trade_timestamp,
         "session_loss": max(0.0, -float(state["total_pnl"])),
         "max_position_size": dynamic_max_position,
-        "cooldown_seconds": runtime.cfg.cooldown_seconds,
+        "cooldown_seconds": dynamic_cooldown_seconds,
         "max_loss_per_session": dynamic_max_daily_loss,
-        "daily_loss_limit": runtime.cfg.daily_loss_limit,
-        "risk_per_trade": runtime.cfg.risk_per_trade,
+        "daily_loss_limit": dynamic_daily_loss_limit,
+        "risk_per_trade": dynamic_risk_per_trade,
+        "max_exposure": dynamic_max_exposure,
+        "max_concurrent_positions": dynamic_max_concurrent_positions,
+        "portfolio_drawdown_limit": dynamic_portfolio_drawdown_limit,
+        "per_strategy_drawdown_limit": dynamic_per_strategy_drawdown_limit,
+        "extreme_loss_kill_switch": dynamic_extreme_loss_kill_switch,
+        "strategy_kill_loss": dynamic_strategy_kill_loss,
+        "vol_target": dynamic_vol_target,
+        "vol_floor": dynamic_vol_floor,
+        "vol_ceiling": dynamic_vol_ceiling,
+        "low_vol_multiplier": dynamic_low_vol_multiplier,
+        "high_vol_multiplier": dynamic_high_vol_multiplier,
+        "min_trade_size": dynamic_min_trade_size,
+        "max_trade_size": dynamic_max_trade_size,
         "confidence_threshold": dynamic_conf_threshold,
         "equity": float(state["equity"]),
         "_meta": {
@@ -720,9 +765,7 @@ async def run_alpaca_paper_session(config: Optional[AlpacaConfig] = None) -> Dic
         "win_rate": float(metrics["win_rate"]),
         "max_drawdown": float(metrics["max_drawdown"]),
         "sharpe_ratio": float(metrics["sharpe_ratio"]),
-        "mean_reversion_weight": float(runtime.feedback.strategy_weights["mean_reversion"]),
-        "momentum_weight": float(runtime.feedback.strategy_weights["momentum"]),
-        "volatility_breakout_weight": float(runtime.feedback.strategy_weights.get("volatility_breakout", 0.0)),
+        "strategy_weights": {k: float(v) for k, v in runtime.feedback.strategy_weights.items()},
         "ticks_processed": float(runtime.tick_counter),
     }
 
@@ -765,9 +808,7 @@ def _write_dashboard(
             "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
             "equity": float(state.get("equity", 0.0)),
             "executed_trades": executed_trades,
-            "weights_mr": w.get("mean_reversion"),
-            "weights_mo": w.get("momentum"),
-            "weights_vb": w.get("volatility_breakout"),
+            "weights_json": json.dumps({k: float(v) for k, v in w.items()}, default=str),
         },
     )
 

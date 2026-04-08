@@ -49,9 +49,7 @@ def dashboard_row(
         "ts": ts,
         "event": event,
         "symbol": symbol,
-        "weights_mean_reversion": weights.get("mean_reversion"),
-        "weights_momentum": weights.get("momentum"),
-        "weights_volatility_breakout": weights.get("volatility_breakout"),
+        "strategy_weights": {k: float(v) for k, v in weights.items()},
         **metrics,
     }
     if extra:
