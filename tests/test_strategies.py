@@ -2,10 +2,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
 
-from feature_engine import FeatureSnapshot
-from strategies.mean_reversion import generate_signal as mean_reversion_signal
-from strategies.momentum import generate_signal as momentum_signal
-from strategies.volatility_breakout import generate_signal as volatility_breakout_signal
+from src.miniqs.engine.feature_engine import FeatureSnapshot
+from src.miniqs.strategies.mean_reversion import generate_signal as mean_reversion_signal
+from src.miniqs.strategies.momentum import generate_signal as momentum_signal
+from src.miniqs.strategies.volatility_breakout import generate_signal as volatility_breakout_signal
 
 
 def _features(price: float, mean: float, momentum: float) -> FeatureSnapshot:

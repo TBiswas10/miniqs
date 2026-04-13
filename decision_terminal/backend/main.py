@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, pstdev
@@ -12,18 +13,32 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.miniqs.config.asset import resolve_asset_config
 from .event_engine import EventEngine
 from .event_persistence import EventStore
-from .event_schemas import EventMessage, KillSwitchRequest, ReplayForkRequest, RiskUpdateRequest, StartStopRequest, StrategyToggleRequest
-from quant_control_state import load_control_state, save_control_state
-from strategies import default_strategy_registry
+from .event_schemas import AssetUpdateRequest, EventMessage, KillSwitchRequest, ReplayForkRequest, RiskUpdateRequest, StartStopRequest, StrategyToggleRequest
+from src.miniqs.risk.quant_control_state import load_control_state, save_control_state
+from src.miniqs.strategies import default_strategy_registry
 
 ROOT = Path(__file__).resolve().parents[2]
 TRACE_PATH = ROOT / "logs" / "alpaca_brain_trace.jsonl"
 DB_PATH = ROOT / "logs" / "decision_terminal.db"
 JSONL_PATH = ROOT / "logs" / "decision_events.jsonl"
 
-app = FastAPI(title="Quant Control and Data Engine", version="2.0.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if os.getenv("RESET_STORAGE", "true").lower() == "true":
+        STORE.clear_all()
+        print("[backend] Dashboard storage reset completed.")
+        
+    await ENGINE.start()
+    try:
+        yield
+    finally:
+        await ENGINE.stop()
+
+
+app = FastAPI(title="Quant Control and Data Engine", version="2.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -81,16 +96,6 @@ ENGINE = EventEngine(
     get_control_state=_control_copy,
     trigger_kill_switch=_trigger_kill_switch,
 )
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    await ENGINE.start()
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    await ENGINE.stop()
 
 
 def _build_history(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -252,7 +257,7 @@ def _confidence_decomposition(
     decision_row: Dict[str, Any],
     strategy_health: Dict[str, Dict[str, Any]],
 ) -> Dict[str, float]:
-    signals = decision_row.get("signals") if isinstance(decision_row.get("signals"), dict) else {}
+    signals = decision_row.get("src.miniqs.signals") if isinstance(decision_row.get("src.miniqs.signals"), dict) else {}
     signal_strength = _clamp01(max((float(v.get("confidence", 0.0)) for v in signals.values() if isinstance(v, dict)), default=float(latest_signal.get("confidence", 0.0))))
 
     actionable = [
@@ -345,7 +350,7 @@ def _hold_reasons(confidence: Dict[str, float], risk_debug: Dict[str, Dict[str, 
         {"reason": "low confidence", "impact": _clamp01(float(conf_gate.get("threshold", 0.0)) - float(conf_gate.get("value", 0.0)))},
         {"reason": "strategy disagreement", "impact": _clamp01(1.0 - float(confidence.get("agreement", 0.0)))},
         {"reason": "regime mismatch", "impact": _clamp01(1.0 - float(confidence.get("regime_fit", 0.0)))},
-        {"reason": "risk gate failure", "impact": _clamp01(risk_fail)},
+        {"reason": "src.miniqs.risk gate failure", "impact": _clamp01(risk_fail)},
     ]
     ranked.sort(key=lambda row: float(row["impact"]), reverse=True)
     return [{"reason": row["reason"], "impact": round(float(row["impact"]), 6)} for row in ranked[:3]]
@@ -421,10 +426,10 @@ def _counterfactual_replay(
     config_override: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     override = config_override or {}
-    override_risk = override.get("risk") if isinstance(override.get("risk"), dict) else {}
+    override_risk = override.get("src.miniqs.risk") if isinstance(override.get("src.miniqs.risk"), dict) else {}
     override_weights = override.get("strategy_weights") if isinstance(override.get("strategy_weights"), dict) else {}
-    threshold = float(override.get("confidence_threshold", override_risk.get("confidence_threshold", controls.get("risk", {}).get("confidence_threshold", 0.35))))
-    max_pos = float(override_risk.get("max_position_size", controls.get("risk", {}).get("max_position_size", 1.0)))
+    threshold = float(override.get("confidence_threshold", override_risk.get("confidence_threshold", controls.get("src.miniqs.risk", {}).get("confidence_threshold", 0.35))))
+    max_pos = float(override_risk.get("max_position_size", controls.get("src.miniqs.risk", {}).get("max_position_size", 1.0)))
 
     prices = [float(row.get("price", 0.0)) for row in timeline]
     if input_prices:
@@ -447,7 +452,7 @@ def _counterfactual_replay(
         original_decisions.append(original_action)
         raw_payload = row.get("raw") if isinstance(row.get("raw"), dict) else {}
         decision_row = raw_payload.get("raw") if isinstance(raw_payload.get("raw"), dict) else {}
-        signals = decision_row.get("signals") if isinstance(decision_row.get("signals"), dict) else {}
+        signals = decision_row.get("src.miniqs.signals") if isinstance(decision_row.get("src.miniqs.signals"), dict) else {}
 
         buy_score = 0.0
         sell_score = 0.0
@@ -536,7 +541,7 @@ def _build_decision_inspector(
         ):
             if key in decision_row:
                 features[key] = decision_row.get(key)
-        for nested_key in ("signals", "chosen", "evaluator", "risk"):
+        for nested_key in ("src.miniqs.signals", "chosen", "evaluator", "src.miniqs.risk"):
             nested = decision_row.get(nested_key)
             if isinstance(nested, dict):
                 features[nested_key] = nested
@@ -584,11 +589,13 @@ def _snapshot() -> Dict[str, Any]:
     order_events = [ev for ev in events if ev["event_type"] == "order_update"]
     latest_signal = latest.get("signal") or {}
     latest_portfolio = latest.get("portfolio") or {}
-    latest_risk = latest.get("risk") or {}
+    latest_risk = latest.get("src.miniqs.risk") or {}
     controls = _control_copy()
-    control_risk = controls.get("risk", {}) if isinstance(controls.get("risk"), dict) else {}
+    control_risk = controls.get("src.miniqs.risk", {}) if isinstance(controls.get("src.miniqs.risk"), dict) else {}
+    control_asset = controls.get("asset", {}) if isinstance(controls.get("asset"), dict) else {}
+    active_symbol = str(control_asset.get("symbol") or "BTC/USD")
     synced_strategy_registry = [name for name in SUPPORTED_STRATEGIES]
-    control_strategies = controls.get("strategies", {}) if isinstance(controls.get("strategies"), dict) else {}
+    control_strategies = controls.get("src.miniqs.strategies", {}) if isinstance(controls.get("src.miniqs.strategies"), dict) else {}
     missing_strategy_controls = [name for name in synced_strategy_registry if name not in control_strategies]
 
     open_orders = []
@@ -600,7 +607,7 @@ def _snapshot() -> Dict[str, Any]:
             {
                 "id": str(order["payload"].get("order_id", "")),
                 "status": state,
-                "symbol": order.get("symbol") or "BTC/USD",
+                "symbol": order.get("symbol") or active_symbol,
                 "price": float(order["payload"].get("fill_price", order["payload"].get("expected_price", 0.0))),
             }
         )
@@ -610,7 +617,7 @@ def _snapshot() -> Dict[str, Any]:
     alerts = [
         {
             "level": "error" if str(ev["payload"].get("severity", "warn")) == "error" else "warn",
-            "message": str(ev["payload"].get("reason", "risk event")),
+            "message": str(ev["payload"].get("reason", "src.miniqs.risk event")),
         }
         for ev in risk_events[-8:]
     ]
@@ -686,7 +693,7 @@ def _snapshot() -> Dict[str, Any]:
                 },
             },
             "position": {
-                "symbol": "BTC/USD",
+                "symbol": active_symbol,
                 "size": float(latest_portfolio.get("position_size", 0.0)),
                 "price": float(latest_portfolio.get("price", 0.0)),
             },
@@ -708,6 +715,7 @@ def _snapshot() -> Dict[str, Any]:
             "reconnects": reconnect_count,
             "last_tick_age_sec": last_tick_age_sec,
             "controls": controls,
+            "asset": control_asset,
             "app_contract": {
                 "strategy_registry": synced_strategy_registry,
                 "risk_parameters": list(SUPPORTED_RISK_FIELDS),
@@ -776,6 +784,7 @@ def _snapshot() -> Dict[str, Any]:
             "timeline": replay_timeline,
         },
         "alerts": alerts,
+        "health_report": latest.get("health_report", {}).get("report", "No report available yet. Station is currently optimizing...")
     }
 
 
@@ -872,10 +881,10 @@ async def control_strategy(payload: StrategyToggleRequest) -> Dict[str, Any]:
     strategy = payload.strategy.strip().lower()
     if strategy not in SUPPORTED_STRATEGIES:
         raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy}")
-    state.setdefault("strategies", {})
+    state.setdefault("src.miniqs.strategies", {})
     for strategy_name in SUPPORTED_STRATEGIES:
-        state["strategies"].setdefault(strategy_name, True)
-    state["strategies"][strategy] = payload.enabled
+        state["src.miniqs.strategies"].setdefault(strategy_name, True)
+    state["src.miniqs.strategies"][strategy] = payload.enabled
     persisted = _persist_control(state)
     await ENGINE.emit(
         EventMessage(
@@ -893,6 +902,48 @@ async def control_strategy(payload: StrategyToggleRequest) -> Dict[str, Any]:
     return {"ok": True, "control": persisted}
 
 
+@app.post("/api/control/asset")
+async def control_asset(payload: AssetUpdateRequest) -> Dict[str, Any]:
+    state = _control_copy()
+    resolved = resolve_asset_config(
+        symbol=payload.symbol,
+        asset_type=payload.asset_type,
+        market_hours=payload.market_hours,
+        trading_fees=payload.trading_fees,
+    )
+    state["asset"] = {
+        "symbol": resolved.symbol,
+        "asset_type": resolved.asset_type,
+        "market_hours": (
+            {
+                "open": resolved.market_hours.open,
+                "close": resolved.market_hours.close,
+                "timezone": resolved.market_hours.timezone,
+            }
+            if resolved.market_hours
+            else None
+        ),
+        "trading_fees": resolved.trading_fees,
+    }
+    state["portfolio_reset_requested_at"] = datetime.now(timezone.utc).isoformat()
+    persisted = _persist_control(state)
+    await ENGINE.emit(
+        EventMessage(
+            event_type="risk_event",
+            source="control",
+            strategy_id="system",
+            symbol=resolved.symbol,
+            payload={
+                "risk_type": "control",
+                "severity": "info",
+                "reason": f"asset switched to {resolved.symbol} ({resolved.asset_type})",
+                "controls": persisted,
+            },
+        )
+    )
+    return {"ok": True, "control": persisted}
+
+
 @app.post("/api/control/risk")
 async def control_risk(payload: RiskUpdateRequest) -> Dict[str, Any]:
     updates = payload.model_dump(exclude_none=True)
@@ -900,14 +951,14 @@ async def control_risk(payload: RiskUpdateRequest) -> Dict[str, Any]:
     for key, value in updates.items():
         if key not in SUPPORTED_RISK_FIELDS:
             raise HTTPException(status_code=400, detail=f"Unsupported risk parameter: {key}")
-        state.setdefault("risk", {})[key] = int(value) if key in INT_RISK_FIELDS else float(value)
+        state.setdefault("src.miniqs.risk", {})[key] = int(value) if key in INT_RISK_FIELDS else float(value)
     persisted = _persist_control(state)
     await ENGINE.emit(
         EventMessage(
             event_type="risk_event",
             source="control",
             strategy_id="system",
-            payload={"risk_type": "control", "severity": "info", "reason": "risk parameters updated", "updates": updates},
+            payload={"risk_type": "control", "severity": "info", "reason": "src.miniqs.risk parameters updated", "updates": updates},
         )
     )
     return {"ok": True, "control": persisted}

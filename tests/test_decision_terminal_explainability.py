@@ -40,7 +40,7 @@ class TestDecisionTerminalExplainability(unittest.TestCase):
                     "risk_checks": [],
                     "raw": {
                         "raw": {
-                            "signals": {
+                            "src.miniqs.signals": {
                                 "mean_reversion": {"action": "hold", "confidence": 0.2, "reason": "range"},
                                 "momentum": {"action": "buy", "confidence": 0.62, "reason": "trend"},
                                 "volatility_breakout": {"action": "hold", "confidence": 0.1, "reason": "quiet"},
@@ -67,7 +67,7 @@ class TestDecisionTerminalExplainability(unittest.TestCase):
                     "tick": 101,
                     "stage": "no_signal",
                     "detail": "confidence_below_threshold",
-                    "signals": {
+                    "src.miniqs.signals": {
                         "mean_reversion": {"action": "hold", "confidence": 0.22, "reason": "volatility filter"},
                         "momentum": {"action": "buy", "confidence": 0.34, "reason": "trend weak"},
                         "volatility_breakout": {"action": "sell", "confidence": 0.30, "reason": "breakout weak"},
@@ -111,7 +111,7 @@ class TestDecisionTerminalExplainability(unittest.TestCase):
         self.assertEqual(len(reasons), 3)
         impacts = [float(row["impact"]) for row in reasons]
         self.assertEqual(impacts, sorted(impacts, reverse=True))
-        allowed = {"low confidence", "strategy disagreement", "regime mismatch", "risk gate failure"}
+        allowed = {"low confidence", "strategy disagreement", "regime mismatch", "src.miniqs.risk gate failure"}
         self.assertTrue(all(str(row["reason"]) in allowed for row in reasons))
 
     def test_strategy_health_fields_exist(self) -> None:
@@ -135,7 +135,7 @@ class TestDecisionTerminalExplainability(unittest.TestCase):
 
     def test_counterfactual_replay_deterministic(self) -> None:
         timeline = self._sample_history()[-8:]
-        controls = {"risk": {"confidence_threshold": 0.4, "max_position_size": 1.0}}
+        controls = {"src.miniqs.risk": {"confidence_threshold": 0.4, "max_position_size": 1.0}}
         override = {"confidence_threshold": 0.3, "strategy_weights": {"momentum": 1.2, "mean_reversion": 0.9}}
         out1 = _counterfactual_replay(timeline, controls, input_prices=[row["price"] for row in timeline], config_override=override)
         out2 = _counterfactual_replay(timeline, controls, input_prices=[row["price"] for row in timeline], config_override=override)

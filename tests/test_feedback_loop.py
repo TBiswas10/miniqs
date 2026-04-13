@@ -1,6 +1,6 @@
 import unittest
 
-from main import FeedbackLoop, run_feedback_simulation
+from scripts.run_main import FeedbackLoop, run_feedback_simulation
 
 
 class TestFeedbackLoop(unittest.TestCase):

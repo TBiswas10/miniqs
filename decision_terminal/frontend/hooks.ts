@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DecisionPayload, RiskControls } from "@/lib/types";
+import { AssetControls, DecisionPayload, RiskControls } from "@/lib/types";
 import { API_BASE, WS_BASE } from "@/lib/config";
 
 const fallback: DecisionPayload = {
@@ -16,7 +16,7 @@ const fallback: DecisionPayload = {
     },
     checks: [],
     decision: { action: "HOLD", stage: "idle", reason: "Waiting for stream", pipeline: { signal: "idle", decision: "idle", sent: "idle", filled: "idle" } },
-    position: { symbol: "BTC/USD", size: 0, price: 0 },
+    position: { symbol: "UNKNOWN", size: 0, price: 0 },
     account: { equity: 0, pnl: 0, executed_trades: 0, cash: 0, open_orders: [], pnl_spark: [] },
   },
   meta: {
@@ -27,6 +27,7 @@ const fallback: DecisionPayload = {
     controls: {
       trading_enabled: true,
       kill_switch: false,
+      asset: { symbol: "UNKNOWN", asset_type: "crypto", market_hours: null, trading_fees: 0.001 },
       strategies: { mean_reversion: true, momentum: true, volatility_breakout: true },
       risk: {
         confidence_threshold: 0.6,
@@ -87,6 +88,13 @@ export function useDecisionStream() {
   const [controlError, setControlError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
+
+  const resetReplayState = () => {
+    setReplayMode(false);
+    setReplayPlaying(false);
+    setReplayCursor(0);
+    setSelectedDecisionIndex(null);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -207,6 +215,7 @@ export function useDecisionStream() {
       }
       const json = (await response.json()) as { control?: DecisionPayload["meta"]["controls"] };
       if (json.control) {
+        const activeAsset = json.control.asset ?? payload.meta.controls.asset;
         setPayload((prev) => ({
           ...prev,
           meta: {
@@ -214,6 +223,36 @@ export function useDecisionStream() {
             controls: json.control ?? prev.meta.controls,
           },
         }));
+        if (path === "/api/control/asset") {
+          resetReplayState();
+          setPayload((prev) => ({
+            ...prev,
+            decision: {
+              ...prev.decision,
+              position: {
+                ...prev.decision.position,
+                symbol: activeAsset?.symbol ?? prev.decision.position.symbol,
+              },
+            },
+            history: [],
+            thought_stream: [],
+            why_not_trade: [],
+            hold_reasons: [],
+            strategy_intelligence: [],
+            strategy_health: {},
+            risk_debug: {
+              confidence_gate: { value: 0, threshold: 0.35, passed: false, delta: 0 },
+              position_limit: { current: 0, max: 1, passed: true, delta: 1 },
+              drawdown_guard: { current_dd: 0, max_dd: 1, passed: true, delta: 1 },
+            },
+            decision_inspector: { full_object: {}, features: {}, risk_checks: [], reasoning: "--" },
+            counterfactuals: [],
+            counterfactual_result: { changed_actions: 0, pnl_original: 0, pnl_counterfactual: 0, delta: 0 },
+            performance: { win_rate: 0, avg_profit: 0, max_drawdown: 0, sharpe_approx: 0, equity_curve: [] },
+            replay: { cursor: 0, length: 0, timeline: [] },
+            alerts: [],
+          }));
+        }
       }
       return json;
     } catch (err) {
@@ -226,6 +265,7 @@ export function useDecisionStream() {
   const setTradingEnabled = async (enabled: boolean) => postControl("/api/control/trading", { enabled });
   const setKillSwitch = async (engage: boolean) => postControl("/api/control/kill-switch", { engage });
   const setStrategyEnabled = async (strategy: string, enabled: boolean) => postControl("/api/control/strategy", { strategy, enabled });
+  const setAsset = async (asset: AssetControls) => postControl("/api/control/asset", asset);
   const updateRisk = async (risk: Partial<RiskControls>) =>
     postControl("/api/control/risk", risk);
 
@@ -267,6 +307,7 @@ export function useDecisionStream() {
     setTradingEnabled,
     setKillSwitch,
     setStrategyEnabled,
+    setAsset,
     updateRisk,
   };
 }

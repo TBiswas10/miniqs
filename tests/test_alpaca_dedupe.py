@@ -1,6 +1,6 @@
 import unittest
 
-from alpaca_data_stream import dedupe_key_for_message
+from src.miniqs.data.stream import dedupe_key_for_message
 
 
 class TestAlpacaDedupe(unittest.TestCase):

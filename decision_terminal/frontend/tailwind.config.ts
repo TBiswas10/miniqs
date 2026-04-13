@@ -11,22 +11,27 @@ const config: Config = {
     extend: {
       colors: {
         terminal: {
-          bg: "#050608",
-          panel: "rgba(11,16,24,0.62)",
-          border: "rgba(93,130,168,0.28)",
-          text: "#eaf4ff",
-          secondary: "#a9b9cb",
-          muted: "#6f8196",
-          buy: "#39ff9a",
-          sell: "#ff5c77",
-          blocked: "#ffbf3c",
-          neutral: "#37d9ff",
+          bg: "#020617", // Aurelius Obsidian
+          panel: "rgba(10, 15, 25, 0.45)",
+          "panel-glass": "rgba(8, 12, 18, 0.45)",
+          border: "rgba(119, 162, 249, 0.12)",
+          "border-bright": "rgba(119, 162, 249, 0.25)",
+          text: "#f1f5f9", // Aurelius Text
+          secondary: "#cbd5e1",
+          muted: "#64748b",
+          buy: "hsl(145, 100%, 65%)", // Aurelius Emerald
+          sell: "hsl(350, 100%, 65%)", // Aurelius Magenta
+          blocked: "hsl(35, 100%, 65%)", // Aurelius Amber
+          neutral: "hsl(190, 100%, 65%)", // Aurelius Neural
+          accent: "hsl(260, 80%, 65%)",
         },
       },
       boxShadow: {
-        panel: "0 0 0 1px rgba(78,121,163,0.22), 0 14px 34px rgba(2,8,16,0.55), inset 0 1px 0 rgba(120,180,255,0.08)",
-        neon: "0 0 24px rgba(55,217,255,0.28)",
-        neonSoft: "0 0 12px rgba(55,217,255,0.2)",
+        panel: "0 8px 32px 0 rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.05)",
+        neon: "0 0 15px hsla(190, 100%, 65%, 0.15)",
+        neonBuy: "0 0 15px hsla(145, 100%, 65%, 0.2)",
+        neonSell: "0 0 15px hsla(350, 100%, 65%, 0.2)",
+        neonSoft: "0 0 12px hsla(190, 100%, 65%, 0.1)",
       },
       borderRadius: {
         xl2: "1rem",

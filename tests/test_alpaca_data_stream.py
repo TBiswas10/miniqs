@@ -1,6 +1,6 @@
 import unittest
 
-from alpaca_data_stream import alpaca_message_to_tick
+from src.miniqs.data.stream import alpaca_message_to_tick
 
 
 class TestAlpacaMessageToTick(unittest.TestCase):

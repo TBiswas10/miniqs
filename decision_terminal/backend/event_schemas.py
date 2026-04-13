@@ -11,13 +11,14 @@ EventType = Literal[
     "risk_event",
     "order_update",
     "portfolio_update",
+    "health_report",
 ]
 
 
 class EventMessage(BaseModel):
     event_type: EventType
     ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    source: str = "engine"
+    source: str = "src.miniqs.engine"
     strategy_id: Optional[str] = None
     symbol: Optional[str] = None
     session_id: str = "default"
@@ -31,6 +32,13 @@ class StartStopRequest(BaseModel):
 class StrategyToggleRequest(BaseModel):
     strategy: str
     enabled: bool
+
+
+class AssetUpdateRequest(BaseModel):
+    symbol: str
+    asset_type: Literal["crypto", "equity"] | None = None
+    market_hours: Dict[str, str] | None = None
+    trading_fees: float | None = None
 
 
 class RiskUpdateRequest(BaseModel):

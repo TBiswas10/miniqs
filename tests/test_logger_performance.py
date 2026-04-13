@@ -3,8 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 
-from logger import QuantLogger
-from performance import PerformanceTracker
+from src.miniqs.utils.logger import QuantLogger
+from src.miniqs.utils.performance import PerformanceTracker
 
 
 class TestLoggerPerformance(unittest.TestCase):

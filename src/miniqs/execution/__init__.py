@@ -1,0 +1,137 @@
+"""Execution primitives for paper trading.
+
+This package keeps broker-agnostic execution logic separate from Alpaca API
+integration so the rest of the system can swap transport implementations
+without changing the decision pipeline.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from src.miniqs.execution.base import AbstractExecutor
+from src.miniqs.execution.execution_simulator import ExecutionSimulationConfig, ExecutionSimulator
+from src.miniqs.risk.portfolio import Portfolio
+
+
+class ExecutionEngine(AbstractExecutor):
+	"""Routes approved trades to a paper portfolio."""
+
+	def __init__(
+		self,
+		portfolio: Portfolio,
+		paper_mode: bool = True,
+		debug: bool = True,
+		realistic_simulation: bool = False,
+		simulation_config: ExecutionSimulationConfig | None = None,
+		simulation_seed: int = 42,
+	) -> None:
+		self.portfolio = portfolio
+		self.paper_mode = paper_mode
+		self.debug = debug
+		self.realistic_simulation = realistic_simulation
+		self.simulator = ExecutionSimulator(config=simulation_config, seed=simulation_seed)
+
+	def execute(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+		"""Satisfy naming requirement for AbstractExecutor."""
+		return self.execute_trade(trade)
+
+	def execute_trade(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+		if not self.paper_mode:
+			raise PermissionError("Live execution disabled in this mini system")
+
+		execution_report: Dict[str, Any] | None = None
+		trade_to_apply = dict(trade)
+		action = str(trade.get("action", "")).lower()
+
+		if self.realistic_simulation:
+			execution_report = self.simulator.simulate(trade)
+			filled_size = float(execution_report.get("filled_size", 0.0))
+			if filled_size <= 0:
+				return {
+					"status": str(execution_report.get("final_state", "rejected")),
+					"action": action,
+					"size": 0.0,
+					"price": float(trade.get("price", 0.0)),
+					"fee": 0.0,
+					"realized_pnl_trade": 0.0,
+					"order_state": str(execution_report.get("final_state", "rejected")),
+					"order_state_path": [str(p.get("state")) for p in execution_report.get("path", [])],
+					"filled_size": filled_size,
+					"remaining_size": float(execution_report.get("remaining_size", 0.0)),
+				}
+
+			trade_to_apply["size"] = filled_size
+			trade_to_apply["price"] = float(execution_report.get("avg_fill_price", trade.get("price", 0.0)))
+
+		result = self.portfolio.execute_trade(trade_to_apply)
+		if execution_report is not None:
+			result["order_state"] = str(execution_report.get("final_state", "filled"))
+			result["order_state_path"] = [str(p.get("state")) for p in execution_report.get("path", [])]
+			result["filled_size"] = float(execution_report.get("filled_size", result.get("size", 0.0)))
+			result["remaining_size"] = float(execution_report.get("remaining_size", 0.0))
+			result["execution_fills"] = execution_report.get("fills", [])
+			result["requested_size"] = float(trade.get("size", result.get("size", 0.0)))
+			result["applied_price"] = float(trade_to_apply.get("price", result.get("price", 0.0)))
+
+		if self.debug:
+			print(
+				f"[execution] action={result['action']} size={result['size']}"
+				f" price={result['price']} fee={result['fee']}"
+			)
+		return result
+
+
+class PaperExecutor:
+	"""Compatibility wrapper around the paper execution engine."""
+
+	def __init__(self, engine: ExecutionEngine) -> None:
+		self.engine = engine
+
+	def execute(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+		return self.engine.execute_trade(trade)
+
+	def execute_trade(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+		"""Backward compatibility for execute_trade."""
+		return self.execute(trade)
+
+
+class LiveExecutor(AbstractExecutor):
+	"""Explicit live-mode executor.
+
+	The system keeps live mode gated behind the main entrypoint so that
+	accidental brokerage access cannot happen through lower-level modules.
+	"""
+
+	def __init__(self, place_order_fn: Any, *, allow_live: bool = False) -> None:
+		if not allow_live:
+			raise PermissionError("live trading requires explicit enablement in the entrypoint")
+		self._place_order = place_order_fn
+
+	def execute(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+		return self._place_order(trade)
+
+
+def execute_trade(trade: Dict[str, Any], portfolio: Portfolio) -> Dict[str, Any]:
+	"""Convenience function matching requested API shape.
+
+	Input:
+	- trade dict
+	- portfolio instance
+
+	Output:
+	- execution result dict
+	"""
+	engine = ExecutionEngine(portfolio=portfolio, paper_mode=True, debug=True)
+	return engine.execute_trade(trade)
+
+
+def create_executor(mode: str, *, portfolio: Portfolio | None = None, allow_live: bool = False) -> Any:
+	mode_normalized = str(mode or "paper").strip().lower()
+	if mode_normalized == "paper":
+		if portfolio is None:
+			raise ValueError("portfolio is required for paper mode")
+		return PaperExecutor(ExecutionEngine(portfolio=portfolio, paper_mode=True, debug=False, realistic_simulation=True))
+	if mode_normalized == "live":
+		raise NotImplementedError("attach an Alpaca place_order function in main.py before enabling live mode")
+	raise ValueError(f"Unsupported execution mode: {mode}")

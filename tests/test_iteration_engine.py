@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from iteration_engine import AutoTuner, ExperimentLogger, RegimeDetector
+from src.miniqs.engine.iteration_engine import AutoTuner, ExperimentLogger, RegimeDetector
 
 
 class TestIterationEngine(unittest.TestCase):

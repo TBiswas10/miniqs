@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from risk_manager import check_risk
+from src.miniqs.risk.risk_manager import check_risk
 
 
 class TestRiskManager(unittest.TestCase):
@@ -80,7 +80,7 @@ class TestRiskManager(unittest.TestCase):
             state,
         )
         self.assertFalse(block_risk)
-        self.assertIn("risk per trade", reason_risk)
+        self.assertIn("src.miniqs.risk per trade", reason_risk)
 
     def test_max_exposure_and_concurrent_positions(self) -> None:
         now = datetime.now(timezone.utc)

@@ -27,6 +27,19 @@ type HistoryRow = {
   raw: Record<string, unknown>;
 };
 
+export type AssetMarketHours = {
+  open: string;
+  close: string;
+  timezone: string;
+};
+
+export type AssetControls = {
+  symbol: string;
+  asset_type: "crypto" | "equity";
+  market_hours: AssetMarketHours | null;
+  trading_fees: number;
+};
+
 export type RiskControls = {
   confidence_threshold: number;
   max_position_size: number;
@@ -92,9 +105,11 @@ export type DecisionPayload = {
     connection_event: string;
     reconnects: number;
     last_tick_age_sec: number | null;
+    asset?: AssetControls;
     controls: {
       trading_enabled: boolean;
       kill_switch: boolean;
+      asset?: AssetControls;
       strategies: Record<string, boolean>;
       risk: RiskControls;
     };
@@ -192,4 +207,5 @@ export type DecisionPayload = {
     timeline: HistoryRow[];
   };
   alerts: Array<{ level: "info" | "warn" | "error"; message: string }>;
+  health_report?: string;
 };

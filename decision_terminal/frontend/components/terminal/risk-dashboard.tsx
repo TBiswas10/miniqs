@@ -3,6 +3,7 @@ import { Card, CardBody, CardTitle } from "@/components/ui/card";
 
 type Props = {
   symbol: string;
+  assetType?: "crypto" | "equity";
   positionSize: number;
   price: number;
   maxPositionSize: number;
@@ -35,6 +36,7 @@ function riskStatus(
 
 export function RiskDashboard({
   symbol,
+  assetType,
   positionSize,
   price,
   maxPositionSize,
@@ -65,6 +67,9 @@ export function RiskDashboard({
         <div className="flex items-center justify-between rounded border border-terminal-border px-3 py-2">
           <span className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Risk Status</span>
           <Badge tone={status === "safe" ? "buy" : status === "warning" ? "blocked" : "sell"}>{status}</Badge>
+        </div>
+        <div className="rounded border border-terminal-border px-3 py-2 text-xs text-terminal-secondary">
+          Asset mode: <span className="text-terminal-text">{assetType ?? (symbol.includes("/") ? "crypto" : "equity")}</span>
         </div>
 
         <div className="rounded border border-terminal-border p-2">

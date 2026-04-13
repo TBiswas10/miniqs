@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from risk_manager import RiskConfig, RiskEngine
+from src.miniqs.risk.risk_manager import RiskConfig, RiskEngine
 
 
 class TestRiskEngine(unittest.TestCase):
     def test_vol_scaled_sizing_changes_with_volatility(self) -> None:
-        engine = RiskEngine(initial_equity=100000.0, config=RiskConfig(base_trade_size=1.0, vol_target=0.01))
+        engine = RiskEngine(
+            initial_equity=100000.0,
+            config=RiskConfig(base_trade_size=1.0, vol_target=0.01, min_trade_size=0.1, max_trade_size=5.0),
+        )
         now = datetime.now(timezone.utc)
 
         trade = {

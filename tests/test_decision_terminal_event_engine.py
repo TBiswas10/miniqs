@@ -32,7 +32,7 @@ class TestDecisionTerminalEventEngine(unittest.TestCase):
             "timestamp": "2026-04-08T04:41:52.997231+00:00",
             "symbol": "BTC/USD",
             "stage": "no_signal",
-            "signals": {
+            "src.miniqs.signals": {
                 "mean_reversion": {"action": "hold", "confidence": 0.0, "reason": "volatility filter"},
                 "momentum": {"action": "hold", "confidence": 0.29816, "reason": "trend mismatch"},
                 "volatility_breakout": {"action": "hold", "confidence": 0.2, "reason": "threshold"},
@@ -59,7 +59,7 @@ class TestDecisionTerminalEventEngine(unittest.TestCase):
             "kind": "decision",
             "timestamp": "2026-04-08T04:42:52.997231+00:00",
             "symbol": "BTC/USD",
-            "signals": {
+            "src.miniqs.signals": {
                 "momentum": {"action": "hold", "confidence": 0.75, "reason": "hold"},
             },
             "chosen": {"strategy": "mean_reversion", "action": "buy", "confidence": 0.64, "reason": "vote"},
@@ -79,12 +79,12 @@ class TestDecisionTerminalEventEngine(unittest.TestCase):
             "timestamp": "2026-04-08T04:43:52.997231+00:00",
             "symbol": "BTC/USD",
             "stage": "no_signal",
-            "signals": {
+            "src.miniqs.signals": {
                 "mean_reversion": {"action": "hold", "confidence": 0.0, "reason": "volatility filter"},
                 "momentum": {"action": "hold", "confidence": 0.29816, "reason": "trend mismatch"},
             },
             "chosen": None,
-            "risk": {"allowed": False, "reason": "risk blocked"},
+            "src.miniqs.risk": {"allowed": False, "reason": "src.miniqs.risk blocked"},
             "detail": "confidence_below_threshold",
         }
 
