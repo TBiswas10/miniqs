@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 import unittest
 
-from feature_engine import FeatureSnapshot
-from strategies import StrategySignal, default_strategy_registry, generate_weighted_signals
+from src.miniqs.engine.feature_engine import FeatureSnapshot
+from src.miniqs.strategies import StrategySignal, default_strategy_registry, generate_weighted_signals
 
 
 class _AlwaysBuyMomentum:

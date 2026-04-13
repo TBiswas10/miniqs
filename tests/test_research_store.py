@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from research_store import ResearchDatasetStore
+from src.miniqs.data.research_store import ResearchDatasetStore
 
 
 class TestResearchStore(unittest.TestCase):

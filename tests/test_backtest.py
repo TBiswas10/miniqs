@@ -1,6 +1,6 @@
 import unittest
 
-from backtest import optimize_parameters, run_backtest, run_walk_forward_backtest
+from scripts.run_backtest import optimize_parameters, run_backtest, run_walk_forward_backtest
 
 
 class TestBacktest(unittest.TestCase):

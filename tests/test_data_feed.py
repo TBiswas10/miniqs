@@ -1,6 +1,6 @@
 import unittest
 
-from data_feed import DataFeed, Tick
+from src.miniqs.data.data_feed import DataFeed, Tick
 
 
 class TestDataFeed(unittest.TestCase):

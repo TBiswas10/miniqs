@@ -260,3 +260,20 @@ class EventStore:
             }
             for row in rows
         ]
+
+    def clear_all(self) -> None:
+        """Fully reset the dashboard storage for a fresh session."""
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            tables = ["events", "signals", "orders", "portfolio_snapshots", "risk_events"]
+            for table in tables:
+                cur.execute(f"DELETE FROM {table}")
+            conn.commit()
+            # Truncate JSONL
+            with self.jsonl_path.open("w", encoding="utf-8") as handle:
+                handle.truncate(0)
+        except Exception as e:
+            print(f"Dashboard purge failed: {e}")
+        finally:
+            conn.close()

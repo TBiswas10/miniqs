@@ -8,6 +8,10 @@ Modes:
 
 from __future__ import annotations
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import argparse
 import json
 import subprocess
@@ -21,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backtest import run_backtest, run_walk_forward_backtest
-from event_driven_pipeline import run_event_driven_paper_trading_session
+from scripts.run_backtest import run_backtest, run_walk_forward_backtest
+from scripts.run_event_pipeline import run_event_driven_paper_trading_session
 
 
 DEFAULT_CONFIG: Dict[str, float] = {

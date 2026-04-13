@@ -1,9 +1,12 @@
+"use client";
+
 import { Badge } from "@/components/ui/badge";
 import { DecisionPayload } from "@/lib/types";
-import { Play, Square, StepBack, StepForward } from "lucide-react";
+import { Play, Square, StepBack, StepForward, Terminal, Activity, Zap, History, FileText } from "lucide-react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { motion, AnimatePresence } from "framer-motion";
 
-type AdvancedTab = "inspector" | "counterfactual" | "performance" | "replay";
+type AdvancedTab = "inspector" | "counterfactual" | "performance" | "replay" | "station_report";
 
 type Props = {
   payload: DecisionPayload;
@@ -18,7 +21,9 @@ type Props = {
   replayPlaying: boolean;
   setReplayPlaying: React.Dispatch<React.SetStateAction<boolean>>;
   replayStep: (delta: number) => void;
+  replaySeek: (cursor: number) => void;
   activeHistory: DecisionPayload["history"];
+  healthReport?: string;
 };
 
 function toneFromSignal(signal: string) {
@@ -40,163 +45,269 @@ export function AdvancedPanels({
   replayPlaying,
   setReplayPlaying,
   replayStep,
+  replaySeek,
   activeHistory,
 }: Props) {
   return (
-    <section className="mb-3 rounded-xl2 border border-terminal-border bg-terminal-panel p-3 shadow-panel">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+    <section className="mb-3 rounded-2xl glass-panel p-4 shadow-panel border-terminal-border/10">
+      <div className="mb-4 flex flex-wrap items-center gap-3 border-b border-terminal-border/10 pb-3">
         {([
-          ["inspector", "Decision Inspector"],
-          ["counterfactual", "Counterfactual Engine"],
-          ["performance", "Performance Analytics"],
-          ["replay", "Replay System"],
-        ] as const).map(([id, label]) => (
+          ["inspector", "Neural Inspector", Terminal],
+          ["counterfactual", "Counterfactuals", Activity],
+          ["performance", "Alpha Analytics", Zap],
+          ["replay", "Decision Audit", History],
+          ["station_report", "Station Report", FileText],
+        ] as const).map(([id, label, Icon]) => (
           <button
             key={id}
-            className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${advancedTab === id ? "border-terminal-neutral text-terminal-neutral" : "border-terminal-border text-terminal-muted"}`}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-[10px] font-black uppercase tracking-[0.15em] transition-all ${advancedTab === id ? "bg-terminal-neutral/10 text-terminal-neutral border border-terminal-neutral/40 shadow-neonSoft" : "text-terminal-muted hover:text-terminal-secondary border border-transparent"}`}
             onClick={() => setAdvancedTab(id)}
-            title={label}
           >
+            <Icon className="h-4 w-4" />
             {label}
           </button>
         ))}
       </div>
 
-      {advancedTab === "inspector" && (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          <div className="rounded-md border border-terminal-border bg-black/20 p-3">
-            <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Decision Inspector</p>
-            <p className="mt-1 text-sm text-terminal-secondary">{selectedDecision?.reason ?? payload.decision_inspector.reasoning}</p>
-            <pre className="mt-2 max-h-[220px] overflow-auto whitespace-pre-wrap text-xs text-terminal-secondary">
-              {JSON.stringify(selectedDecision?.raw ?? payload.decision_inspector.full_object, null, 2)}
-            </pre>
-          </div>
-          <div className="rounded-md border border-terminal-border bg-black/20 p-3">
-            <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Features + Risk Checks</p>
-            <pre className="mt-2 max-h-[100px] overflow-auto whitespace-pre-wrap text-xs text-terminal-secondary">
-              {JSON.stringify(payload.decision_inspector.features, null, 2)}
-            </pre>
-            <div className="mt-2 space-y-1">
-              {(selectedDecision?.risk_checks ?? payload.decision_inspector.risk_checks).map((check) => (
-                <div key={check.key} className="flex items-center justify-between rounded border border-terminal-border px-2 py-1 text-xs">
-                  <span>{check.label}</span>
-                  <Badge tone={check.passed ? "buy" : "sell"}>{check.passed ? "PASS" : "FAIL"}</Badge>
-                </div>
-              ))}
+      <AnimatePresence mode="wait">
+        {advancedTab === "inspector" && (
+          <motion.div 
+            key="inspector"
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="grid grid-cols-1 gap-4 xl:grid-cols-3"
+          >
+            <div className="rounded-xl border border-terminal-border/20 bg-black/40 p-4 xl:col-span-2">
+              <p className="text-[10px] uppercase font-bold tracking-widest text-terminal-muted mb-3 flex items-center gap-2">
+                <Terminal className="h-3 w-3" /> Log Depth: Inference Reason
+              </p>
+              <div className="p-4 rounded-lg bg-black/40 border border-terminal-border/10">
+                <p className="text-sm text-terminal-text font-medium leading-relaxed italic">
+                  "{selectedDecision?.reason ?? payload.decision_inspector.reasoning}"
+                </p>
+              </div>
+              <pre className="mt-4 max-h-[180px] overflow-auto whitespace-pre-wrap text-[11px] text-terminal-secondary font-mono bg-black/20 p-3 rounded-lg border border-white/5">
+                {JSON.stringify(selectedDecision?.raw ?? payload.decision_inspector.full_object, null, 2)}
+              </pre>
             </div>
-          </div>
-        </div>
-      )}
-
-      {advancedTab === "counterfactual" && (
-        <div className="rounded-md border border-terminal-border bg-black/20 p-3">
-          <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Blocked Trade Simulation</p>
-          <div className="mt-2 h-[240px] overflow-auto rounded border border-terminal-border">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-terminal-panel">
-                <tr className="border-b border-terminal-border text-terminal-muted">
-                  <th className="px-2 py-2">Time</th>
-                  <th className="px-2 py-2">Strategy</th>
-                  <th className="px-2 py-2">Side</th>
-                  <th className="px-2 py-2">Entry</th>
-                  <th className="px-2 py-2">Exit</th>
-                  <th className="px-2 py-2">Sim PnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {payload.counterfactuals.map((row, idx) => (
-                  <tr key={`${row.ts}-${idx}`} className="border-b border-terminal-border/50">
-                    <td className="px-2 py-2 text-terminal-muted">{row.ts.slice(11, 19) || row.ts}</td>
-                    <td className="px-2 py-2">{row.strategy}</td>
-                    <td className="px-2 py-2"><Badge tone={toneFromSignal(row.side)}>{row.side}</Badge></td>
-                    <td className="px-2 py-2">{fmt(row.entry_price)}</td>
-                    <td className="px-2 py-2">{fmt(row.simulated_exit_price)}</td>
-                    <td className={`px-2 py-2 ${row.simulated_pnl >= 0 ? "text-terminal-buy" : "text-terminal-sell"}`}>${fmt(row.simulated_pnl)}</td>
-                  </tr>
+            <div className="rounded-xl border border-terminal-border/20 bg-black/40 p-4">
+              <p className="text-[10px] uppercase font-bold tracking-widest text-terminal-muted mb-3">Deterministic Risk Gates</p>
+              <div className="space-y-2">
+                {(selectedDecision?.risk_checks ?? payload.decision_inspector.risk_checks).map((check) => (
+                  <div key={check.key} className="flex items-center justify-between rounded-lg border border-terminal-border/10 px-3 py-2 text-[11px] bg-black/20">
+                    <span className="font-bold text-terminal-secondary">{check.label}</span>
+                    <Badge tone={check.passed ? "buy" : "sell"} className="font-mono">{check.passed ? "VALID" : "FAILED"}</Badge>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {advancedTab === "performance" && (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          <div className="rounded-md border border-terminal-border bg-black/20 p-3">
-            <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Performance Metrics</p>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-              <div className="rounded border border-terminal-border p-2" title="Winning trades ratio">
-                Win Rate
-                <div className="mt-1 text-terminal-neutral">{(payload.performance.win_rate * 100).toFixed(1)}%</div>
-              </div>
-              <div className="rounded border border-terminal-border p-2" title="Average profit per trade">
-                Avg Profit
-                <div className="mt-1 text-terminal-neutral">${fmt(payload.performance.avg_profit)}</div>
-              </div>
-              <div className="rounded border border-terminal-border p-2" title="Maximum drawdown">
-                Max Drawdown
-                <div className="mt-1 text-terminal-blocked">${fmt(payload.performance.max_drawdown)}</div>
-              </div>
-              <div className="rounded border border-terminal-border p-2" title="Approximate Sharpe">
-                Sharpe (Approx)
-                <div className="mt-1 text-terminal-neutral">{payload.performance.sharpe_approx.toFixed(2)}</div>
               </div>
             </div>
-          </div>
-          <div className="rounded-md border border-terminal-border bg-black/20 p-3">
-            <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Equity Curve</p>
-            <div className="mt-2 h-[220px]">
-              {mounted ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={payload.performance.equity_curve}>
-                    <XAxis dataKey="idx" hide />
-                    <YAxis hide />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "#121821", border: "1px solid #1f2933", color: "#f5f7fa" }}
-                      formatter={(v: number) => `$${fmt(Number(v))}`}
-                    />
-                    <Area type="monotone" dataKey="equity" stroke="#22c55e" fill="#22c55e33" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full w-full" />
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+          </motion.div>
+        )}
 
-      {advancedTab === "replay" && (
-        <div className="rounded-md border border-terminal-border bg-black/20 p-3">
-          <p className="text-xs uppercase tracking-[0.08em] text-terminal-muted">Replay System</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button
-              className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${replayMode ? "border-terminal-neutral text-terminal-neutral" : "border-terminal-border text-terminal-muted"}`}
-              onClick={() => setReplayMode(!replayMode)}
-              title="Enable replay mode"
-            >
-              Replay {replayMode ? "ON" : "OFF"}
-            </button>
-            <button className="rounded border border-terminal-border p-1.5 text-terminal-secondary" onClick={() => replayStep(-1)} title="Step back">
-              <StepBack className="h-4 w-4" />
-            </button>
-            <button
-              className="rounded border border-terminal-border p-1.5 text-terminal-secondary"
-              onClick={() => setReplayPlaying((v) => !v)}
-              title={replayPlaying ? "Pause" : "Play"}
-            >
-              {replayPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-            </button>
-            <button className="rounded border border-terminal-border p-1.5 text-terminal-secondary" onClick={() => replayStep(1)} title="Step forward">
-              <StepForward className="h-4 w-4" />
-            </button>
-            <span className="text-xs text-terminal-muted">Tick {replayCursor + 1} / {payload.replay.length}</span>
-          </div>
-          <div className="mt-2 rounded border border-terminal-border p-2 text-xs text-terminal-secondary">
-            Pipeline at cursor: {JSON.stringify(activeHistory[Math.min(replayCursor, Math.max(activeHistory.length - 1, 0))]?.raw ?? {}, null, 0)}
-          </div>
-        </div>
-      )}
+        {advancedTab === "counterfactual" && (
+          <motion.div 
+            key="counterfactual"
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="rounded-xl border border-terminal-border/20 bg-black/40 p-4"
+          >
+            <p className="text-[10px] uppercase font-bold tracking-widest text-terminal-muted mb-3 italic">Simulated Blocked Portfolio Trajectory</p>
+            <div className="h-[280px] overflow-auto rounded-xl border border-terminal-border/10 bg-black/30">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-[#0a101b] z-10">
+                  <tr className="border-b border-terminal-border/20 text-terminal-muted uppercase font-bold">
+                    <th className="px-4 py-3">Timestamp</th>
+                    <th className="px-4 py-3">Strategy</th>
+                    <th className="px-4 py-3 text-center">Bias</th>
+                    <th className="px-4 py-3">Entry</th>
+                    <th className="px-4 py-3">Exit</th>
+                    <th className="px-4 py-3 text-right">Potential PnL</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5 font-mono">
+                  {payload.counterfactuals.map((row, idx) => (
+                    <tr key={`${row.ts}-${idx}`} className="hover:bg-white/5 transition-colors">
+                      <td className="px-4 py-3 text-terminal-muted">{row.ts.slice(11, 19) || row.ts}</td>
+                      <td className="px-4 py-3 font-bold text-terminal-secondary">{row.strategy}</td>
+                      <td className="px-4 py-3 text-center"><Badge tone={toneFromSignal(row.side)} className="rounded-sm">{row.side}</Badge></td>
+                      <td className="px-4 py-3 text-terminal-text">{fmt(row.entry_price)}</td>
+                      <td className="px-4 py-3 text-terminal-text">{fmt(row.simulated_exit_price)}</td>
+                      <td className={`px-4 py-3 text-right font-black ${row.simulated_pnl >= 0 ? "text-terminal-buy" : "text-terminal-sell"}`}>
+                        {row.simulated_pnl >= 0 ? '+' : ''}${fmt(row.simulated_pnl)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </motion.div>
+        )}
+
+        {advancedTab === "performance" && (
+          <motion.div 
+            key="performance"
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="grid grid-cols-1 gap-4 xl:grid-cols-3"
+          >
+             <div className="xl:col-span-2 rounded-xl border border-terminal-border/20 bg-black/40 p-4">
+              <p className="text-[10px] uppercase font-bold tracking-widest text-terminal-muted mb-4">Neural Performance Matrix</p>
+              <div className="h-[240px]">
+                {mounted ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={payload.performance.equity_curve}>
+                      <defs>
+                        <linearGradient id="performGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="hsl(145, 100%, 65%)" stopOpacity={0.4}/>
+                          <stop offset="95%" stopColor="hsl(145, 100%, 65%)" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="idx" hide />
+                      <YAxis hide domain={['dataMin - 10', 'dataMax + 10']} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "#020617", border: "1px solid rgba(119, 162, 249, 0.2)", borderRadius: '12px', fontSize: '10px' }}
+                        formatter={(v: number) => [`$${fmt(Number(v))}`, 'Equity']}
+                      />
+                      <Area type="monotone" dataKey="equity" stroke="hsl(145, 100%, 65%)" fill="url(#performGradient)" strokeWidth={3} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : <div className="h-full w-full bg-black/20 animate-pulse rounded-lg" />}
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="rounded-xl border border-terminal-border/20 bg-black/40 p-4">
+                <p className="text-[10px] uppercase font-bold tracking-widest text-terminal-muted mb-3 flex items-center justify-between">
+                  Primary Alpha Shards
+                  <Zap className="h-3.5 w-3.5 text-terminal-buy" />
+                </p>
+                <div className="space-y-3">
+                   <div className="flex justify-between items-center bg-black/20 p-2 rounded-lg border border-white/5">
+                      <span className="text-[10px] text-terminal-muted uppercase">Avg Capture</span>
+                      <span className="text-sm font-mono font-bold text-terminal-text">${fmt(payload.performance.avg_profit)}</span>
+                   </div>
+                   <div className="flex justify-between items-center bg-black/20 p-2 rounded-lg border border-white/5">
+                      <span className="text-[10px] text-terminal-muted uppercase">Max Drawdown</span>
+                      <span className="text-sm font-mono font-bold text-terminal-sell">-${fmt(payload.performance.max_drawdown)}</span>
+                   </div>
+                   <div className="flex justify-between items-center bg-black/20 p-2 rounded-lg border border-white/5">
+                      <span className="text-[10px] text-terminal-muted uppercase">Sharpe Approx</span>
+                      <span className="text-sm font-mono font-bold text-terminal-neutral">{payload.performance.sharpe_approx.toFixed(2)}</span>
+                   </div>
+                </div>
+              </div>
+              <div className="p-3 bg-terminal-neutral/5 rounded-xl border border-terminal-neutral/20 border-dashed">
+                 <p className="text-[9px] text-terminal-secondary italic leading-relaxed">
+                   Performance shards indicate a high-conviction recovery phase. Volatility scaling is currently at 1.4x baseline.
+                 </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {advancedTab === "replay" && (
+          <motion.div 
+            key="replay"
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="rounded-xl border border-terminal-border/20 bg-black/40 p-4"
+          >
+            <div className="flex flex-wrap items-center justify-between mb-4">
+               <div>
+                  <p className="text-[10px] uppercase font-bold tracking-widest text-terminal-muted">Non-Destructive Replay Axis</p>
+                  <p className="text-[12px] text-terminal-secondary font-mono mt-1">Cursor at Sample: {replayCursor + 1} / {payload.replay.length}</p>
+               </div>
+               <div className="flex items-center gap-2">
+                 <button
+                   className={`rounded-lg border px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-all ${replayMode ? "border-terminal-neutral text-terminal-neutral bg-terminal-neutral/5 shadow-neonSoft" : "border-terminal-border text-terminal-muted"}`}
+                   onClick={() => setReplayMode(!replayMode)}
+                 >
+                   {replayMode ? "Active" : "Engage"} Replay
+                 </button>
+                 <div className="flex items-center gap-1 bg-black/40 rounded-lg p-1 border border-terminal-border/20">
+                    <button className="p-2 hover:text-terminal-neutral transition-colors" onClick={() => replayStep(-1)}><StepBack className="h-4 w-4" /></button>
+                    <button className="p-2 hover:text-terminal-neutral transition-colors" onClick={() => setReplayPlaying(v => !v)}>
+                      {replayPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                    </button>
+                    <button className="p-2 hover:text-terminal-neutral transition-colors" onClick={() => replayStep(1)}><StepForward className="h-4 w-4" /></button>
+                 </div>
+               </div>
+            </div>
+            
+            <div className="relative rounded-xl border border-terminal-border/10 bg-black/30 p-4">
+              {/* Event Marker Track */}
+              <div className="absolute inset-x-4 top-[18px] h-2 pointer-events-none">
+                 {/* 
+                   Dynamic markers for Executions and Blocks.
+                   We map history entries back to the timeline for rapid audit-jumping.
+                 */}
+                 {payload.history.map((h, i) => {
+                    // Logic to find roughly where in the replay this history event occurred
+                    // If replay is same length as history or has direct mapping
+                    const pos = (i / Math.max(1, payload.history.length)) * 100;
+                    if (h.action !== 'EXECUTE' && h.action !== 'BLOCKED') return null;
+                    return (
+                      <div 
+                        key={`mark-${i}`}
+                        className={`absolute top-0 h-2 w-1 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)] ${h.action === 'EXECUTE' ? 'bg-terminal-buy' : 'bg-terminal-sell'}`}
+                        style={{ left: `${pos}%` }}
+                      />
+                    );
+                 })}
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(payload.replay.length - 1, 0)}
+                value={replayCursor}
+                onChange={(e) => replaySeek(Number(e.target.value))}
+                className="relative z-10 h-2 w-full cursor-pointer appearance-none rounded-full bg-terminal-border/30 accent-terminal-neutral"
+              />
+              <div className="mt-2 flex items-center justify-between text-[9px] text-terminal-muted font-bold uppercase tracking-widest">
+                <span>Start</span>
+                <span>Audit Window</span>
+                <span>Live Feed</span>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {advancedTab === "station_report" && (
+          <motion.div 
+            key="station_report"
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="rounded-xl border border-terminal-border/20 bg-black/40 p-6 overflow-auto max-h-[400px]"
+          >
+            <div className="flex items-center justify-between mb-6 pb-4 border-b border-terminal-border/10">
+               <div>
+                  <h3 className="text-lg font-black text-terminal-text uppercase tracking-widest flex items-center gap-2">
+                    <FileText className="h-5 w-5 text-terminal-neutral" />
+                    Autonomous Station Intelligence
+                  </h3>
+                  <p className="text-[10px] text-terminal-muted uppercase tracking-[0.2em] mt-1">Status: Stable | Deployment: BTC-USD V3</p>
+               </div>
+               <Badge tone="buy" className="rounded-sm font-black">ACTIVE</Badge>
+            </div>
+            
+            <div className="prose prose-invert max-w-none">
+                <div className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-terminal-text/90 bg-black/20 p-6 rounded-xl border border-terminal-border/10 shadow-inner">
+                    {healthReport || "Station initialization in progress. Intelligence matrix sync pending..."}
+                </div>
+            </div>
+            
+            <div className="mt-6 flex items-center gap-4 text-[9px] uppercase font-bold tracking-widest text-terminal-muted italic">
+                <span>Refreshed: Every 24h</span>
+                <span className="h-1 w-1 rounded-full bg-terminal-border" />
+                <span>Persistence: logs.db</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   );
 }

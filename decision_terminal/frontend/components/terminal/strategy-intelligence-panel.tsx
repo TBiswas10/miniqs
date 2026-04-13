@@ -39,7 +39,7 @@ export function StrategyIntelligencePanel({ rows, history, controls, mounted, fm
         {rows.slice(0, 4).map((row) => (
           <div
             key={row.strategy}
-            className={`rounded border p-2 ${row.total_pnl < 0 || row.win_rate < 0.4 ? "border-terminal-sell/60 bg-terminal-sell/10" : "border-terminal-border"}`}
+            className={`group rounded border p-2 transition-all duration-200 ${row.total_pnl < 0 || row.win_rate < 0.4 ? "border-terminal-sell/60 bg-terminal-sell/10" : "border-terminal-border bg-black/20"} hover:-translate-y-0.5 hover:shadow-neonSoft`}
           >
             {(() => {
               const recent = history.filter((h) => h.strategy === row.strategy).slice(-8);
@@ -53,7 +53,10 @@ export function StrategyIntelligencePanel({ rows, history, controls, mounted, fm
               return (
                 <>
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-sm text-terminal-text">{row.strategy}</span>
+                    <span className="flex items-center gap-2 text-sm text-terminal-text">
+                      <span className={`h-2 w-2 rounded-full ${status === "active" ? "bg-terminal-buy animate-softPulse" : status === "killed" ? "bg-terminal-sell" : "bg-terminal-blocked"}`} />
+                      {row.strategy}
+                    </span>
                     <div className="flex items-center gap-1">
                       <Badge tone={status === "active" ? "buy" : status === "killed" ? "sell" : "blocked"}>{status}</Badge>
                       <Badge tone={row.total_pnl >= 0 ? "buy" : "sell"}>${fmt(row.total_pnl)}</Badge>
@@ -63,6 +66,13 @@ export function StrategyIntelligencePanel({ rows, history, controls, mounted, fm
                     Signal {currentSignal} · Confidence {(currentConfidence * 100).toFixed(1)}% · Recent win {(recentWinRate * 100).toFixed(1)}%
                   </p>
                   <p className="text-[11px] text-terminal-muted">Recent performance: last {Math.max(recent.length, 1)} trades</p>
+                  <div className="max-h-0 overflow-hidden opacity-0 transition-all duration-200 group-hover:mt-1 group-hover:max-h-16 group-hover:opacity-100">
+                    <div className="grid grid-cols-3 gap-1 text-[10px] text-terminal-secondary">
+                      <div className="rounded border border-terminal-border/50 px-1 py-1">PnL ${fmt(row.total_pnl)}</div>
+                      <div className="rounded border border-terminal-border/50 px-1 py-1">WR {(row.win_rate * 100).toFixed(1)}%</div>
+                      <div className="rounded border border-terminal-border/50 px-1 py-1">Conf {(row.confidence_avg * 100).toFixed(1)}%</div>
+                    </div>
+                  </div>
                 </>
               );
             })()}

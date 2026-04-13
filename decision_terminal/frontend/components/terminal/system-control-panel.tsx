@@ -1,10 +1,14 @@
+"use client";
+
+import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardTitle } from "@/components/ui/card";
-import { RiskControls } from "@/lib/types";
-import { Gauge } from "lucide-react";
+import { AssetControls, RiskControls } from "@/lib/types";
+import { Gauge, RefreshCcw, ShieldAlert } from "lucide-react";
 
 type Controls = {
   trading_enabled: boolean;
   kill_switch: boolean;
+  asset?: AssetControls;
   strategies: Record<string, boolean>;
 };
 
@@ -17,32 +21,16 @@ type Props = {
   setTradingEnabled: (enabled: boolean) => Promise<unknown>;
   setKillSwitch: (engage: boolean) => Promise<unknown>;
   setStrategyEnabled: (strategy: string, enabled: boolean) => Promise<unknown>;
+  setAsset: (asset: AssetControls) => Promise<unknown>;
   updateRisk: (risk: Partial<RiskControls>) => Promise<unknown>;
 };
 
-const CORE_RISK_FIELDS = ["confidence_threshold", "max_position_size", "max_daily_loss"] as const;
+const CORE_RISK_FIELDS = ["confidence_threshold", "max_position_size", "max_loss_per_session"] as const;
 
 const RISK_LABELS: Record<string, string> = {
   confidence_threshold: "Confidence",
-  max_position_size: "Position Size",
-  max_daily_loss: "Daily Loss",
-  risk_per_trade: "Risk / Trade",
-  daily_loss_limit: "Daily Loss Limit",
-  max_exposure: "Max Exposure",
-  max_concurrent_positions: "Max Concurrent",
-  cooldown_seconds: "Cooldown (sec)",
-  max_loss_per_session: "Session Loss Limit",
-  portfolio_drawdown_limit: "Portfolio DD Limit",
-  per_strategy_drawdown_limit: "Per-Strategy DD",
-  extreme_loss_kill_switch: "Extreme Loss Kill",
-  strategy_kill_loss: "Strategy Kill Loss",
-  vol_target: "Vol Target",
-  vol_floor: "Vol Floor",
-  vol_ceiling: "Vol Ceiling",
-  low_vol_multiplier: "Low Vol Mult",
-  high_vol_multiplier: "High Vol Mult",
-  min_trade_size: "Min Trade Size",
-  max_trade_size: "Max Trade Size",
+  max_position_size: "Max Exposure",
+  max_loss_per_session: "Session Loss",
 };
 
 function riskStep(field: string): string {
@@ -58,6 +46,7 @@ export function SystemControlPanel({
   setTradingEnabled,
   setKillSwitch,
   setStrategyEnabled,
+  setAsset,
   updateRisk,
 }: Props) {
   const advancedRiskFields = Object.keys(riskDraft)
@@ -65,43 +54,81 @@ export function SystemControlPanel({
     .sort();
 
   const renderRiskInput = (field: string) => (
-    <label key={field} className="text-xs text-terminal-muted" title={field}>
-      {RISK_LABELS[field] ?? field.replace(/_/g, " ")}
+    <div key={field} className="group flex flex-col">
+      <label className="text-[10px] text-terminal-muted uppercase font-bold tracking-tighter mb-1 select-none">
+        {RISK_LABELS[field] ?? field.replace(/_/g, " ")}
+      </label>
       <input
         type="number"
         step={riskStep(field)}
-        className="mt-1 w-full rounded border border-terminal-border bg-black/30 px-2 py-1 text-terminal-text"
+        className="w-full rounded-md border border-terminal-border bg-black/40 px-3 py-1.5 text-xs text-terminal-text focus:border-terminal-neutral/50 focus:outline-none transition-all font-mono"
         value={Number.isFinite(riskDraft[field]) ? riskDraft[field] : 0}
         onChange={(e) => setRiskDraft((prev) => ({ ...prev, [field]: Number(e.target.value) }))}
       />
-    </label>
+    </div>
   );
 
+  const activeAsset = controls.asset ?? {
+    symbol: "BTC/USD",
+    asset_type: "crypto",
+    market_hours: null,
+    trading_fees: 0.001,
+  };
+
+  const switchAsset = async (symbol: string) => {
+    const isCrypto = symbol.includes("/");
+    await setAsset(
+      isCrypto
+        ? { symbol: "BTC/USD", asset_type: "crypto", market_hours: null, trading_fees: 0.001 }
+        : { symbol: "SPY", asset_type: "equity", market_hours: { open: "09:30", close: "16:00", timezone: "America/New_York" }, trading_fees: 0.0001 },
+    );
+  };
+
   return (
-    <Card className="p-4">
-      <CardTitle className="flex items-center gap-2"><Gauge className="h-4 w-4" /> System Control Panel</CardTitle>
-      <CardBody className="space-y-3">
-        <div className="flex flex-wrap gap-2">
+    <Card className="p-4 border-terminal-neutral/10 bg-terminal-panel shadow-panel">
+      <CardTitle className="flex items-center gap-2 text-terminal-muted text-[11px] uppercase tracking-widest font-bold">
+        <Gauge className="h-4 w-4" /> Guardrail Management
+      </CardTitle>
+      <CardBody className="space-y-4 mt-4">
+        <div className="rounded-xl border border-terminal-border/20 bg-black/30 p-4">
+          <div className="mb-3 flex items-center justify-between text-[11px] uppercase tracking-[0.08em] font-bold text-terminal-muted">
+            <span>Runtime Asset</span>
+            <Badge tone="muted">{activeAsset.asset_type}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            {([
+              { symbol: "BTC/USD", label: "BTC/USD" },
+              { symbol: "SPY", label: "SPY" },
+            ] as const).map((asset) => (
+              <button
+                key={asset.symbol}
+                className={`rounded-lg border px-4 py-2 text-xs font-bold transition-all ${activeAsset.symbol === asset.symbol ? "border-terminal-neutral text-terminal-neutral bg-terminal-neutral/5" : "border-terminal-border text-terminal-muted hover:border-terminal-neutral/40 hover:text-terminal-secondary"}`}
+                onClick={() => void switchAsset(asset.symbol)}
+              >
+                {asset.label}
+              </button>
+            ))}
+            <button
+              className="ml-auto inline-flex items-center gap-1 rounded-lg border border-terminal-border px-3 py-2 text-xs font-bold text-terminal-muted hover:bg-black/20"
+              onClick={() => void setAsset(activeAsset)}
+            >
+              <RefreshCcw className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
           <button
-            className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${controls.trading_enabled ? "border-terminal-buy text-terminal-buy" : "border-terminal-border text-terminal-muted"}`}
-            onClick={() => void setTradingEnabled(true)}
-            title="Resume trading"
+            className={`rounded-lg border px-4 py-2.5 text-xs font-bold uppercase tracking-widest transition-all ${controls.trading_enabled ? "border-terminal-buy text-terminal-buy bg-terminal-buy/5 shadow-neonBuy" : "border-terminal-border text-terminal-muted"}`}
+            onClick={() => void setTradingEnabled(!controls.trading_enabled)}
           >
-            Resume
+            {controls.trading_enabled ? "Running" : "Resume"}
           </button>
           <button
-            className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${!controls.trading_enabled ? "border-terminal-blocked text-terminal-blocked" : "border-terminal-border text-terminal-muted"}`}
-            onClick={() => void setTradingEnabled(false)}
-            title="Pause trading"
-          >
-            Pause
-          </button>
-          <button
-            className={`rounded border px-3 py-1.5 text-xs uppercase tracking-[0.08em] ${controls.kill_switch ? "border-terminal-sell bg-terminal-sell/20 text-terminal-sell" : "border-terminal-border text-terminal-muted"}`}
+            className={`rounded-lg border px-4 py-2.5 text-xs font-bold uppercase tracking-widest transition-all ${controls.kill_switch ? "border-terminal-sell bg-terminal-sell/20 text-terminal-sell shadow-neonSell" : "border-terminal-border text-terminal-muted"}`}
             onClick={() => void setKillSwitch(!controls.kill_switch)}
-            title="Emergency kill switch"
           >
-            Kill Switch
+             Kill Switch
           </button>
         </div>
 
@@ -109,33 +136,33 @@ export function SystemControlPanel({
           {Object.entries(controls.strategies).map(([strategy, enabled]) => (
             <button
               key={strategy}
-              className={`rounded border px-2 py-1 text-xs uppercase tracking-[0.08em] ${enabled ? "border-terminal-buy text-terminal-buy" : "border-terminal-border text-terminal-muted"}`}
+              className={`rounded-lg border px-3 py-2 text-[10px] uppercase font-bold tracking-tighter transition-all ${enabled ? "border-terminal-buy/40 text-terminal-secondary bg-black/20" : "border-terminal-border text-terminal-muted opacity-50"}`}
               onClick={() => void setStrategyEnabled(strategy, !enabled)}
-              title="Toggle strategy"
             >
               {strategy.replace("_", " ")}
             </button>
           ))}
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          {CORE_RISK_FIELDS.map((field) => renderRiskInput(field))}
-        </div>
-
-        <div className="rounded border border-terminal-border p-2">
-          <p className="mb-2 text-[11px] uppercase tracking-[0.08em] text-terminal-muted">Advanced Risk Parameters</p>
-          <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
-            {advancedRiskFields.map((field) => renderRiskInput(field))}
+        <div className="space-y-4 pt-2">
+          <div className="grid grid-cols-3 gap-3">
+            {CORE_RISK_FIELDS.map((field) => renderRiskInput(field))}
           </div>
-        </div>
 
-        <button
-          className="rounded border border-terminal-neutral px-3 py-1.5 text-xs uppercase tracking-[0.08em] text-terminal-neutral"
-          onClick={() => void updateRisk(riskDraft)}
-          title="Apply risk parameter updates"
-        >
-          Apply Risk Parameters
-        </button>
+          <div className="rounded-xl border border-terminal-border/20 bg-black/20 p-4">
+            <p className="mb-3 text-[10px] uppercase tracking-[0.08em] font-bold text-terminal-muted">Extended Guardrails</p>
+            <div className="grid grid-cols-2 gap-3">
+              {advancedRiskFields.slice(0, 4).map((field) => renderRiskInput(field))}
+            </div>
+          </div>
+
+          <button
+            className="w-full flex items-center justify-center gap-2 rounded-xl border border-terminal-neutral/30 bg-terminal-neutral/10 py-3 text-xs font-black uppercase tracking-[0.2em] text-terminal-neutral hover:bg-terminal-neutral/20 transition-all shadow-neonSoft"
+            onClick={() => void updateRisk(riskDraft)}
+          >
+            Apply Hardened Parameters
+          </button>
+        </div>
       </CardBody>
     </Card>
   );

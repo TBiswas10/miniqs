@@ -4,14 +4,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-import alpaca_paper_runner
-import event_driven_pipeline
-import main
-from data_feed import Tick
-from event_bus import EventBus, MarketEvent, SignalEvent
-from main import FeedbackLoop
-from risk_manager import RiskConfig, RiskEngine
-from strategies import StrategySignal, default_strategy_registry
+from src.miniqs.runners import paper as runner
+from scripts import run_event_pipeline as event_driven_pipeline
+from scripts import run_main as main
+from src.miniqs.data.data_feed import Tick
+from src.miniqs.engine.event_bus import EventBus, MarketEvent, SignalEvent
+from scripts.run_main import FeedbackLoop
+from src.miniqs.risk.risk_manager import RiskConfig, RiskEngine
+from src.miniqs.strategies import StrategySignal, default_strategy_registry
 
 
 REQUIRED_TRADE_KEYS = {"action", "size", "confidence", "price", "strategy", "symbol"}
@@ -73,8 +73,8 @@ class TestTradeSchemaContract(unittest.TestCase):
     def test_alpaca_runner_emits_signal_event_with_required_trade_keys(self) -> None:
         bus = EventBus()
 
-        cfg = alpaca_paper_runner.AlpacaConfig(api_key_id="k", api_secret_key="s", symbols=["SPY"])
-        runtime = alpaca_paper_runner.AlpacaRuntime(
+        cfg = runner.AlpacaConfig(api_key_id="k", api_secret_key="s", symbols=["BTC/USD"])
+        runtime = runner.AlpacaRuntime(
             cfg=cfg,
             logger=MagicMock(),
             perf=MagicMock(),
@@ -82,12 +82,13 @@ class TestTradeSchemaContract(unittest.TestCase):
             portfolio=MagicMock(),
             alpaca_exec=MagicMock(),
             strategy_registry=default_strategy_registry(),
-            engines={"SPY": MagicMock()},
-            primary="SPY",
+            engines={"BTC/USD": MagicMock()},
+            primary="BTC/USD",
+            asset={"symbol": "BTC/USD", "asset_type": "crypto", "market_hours": None, "trading_fees": 0.001},
             initial_equity=100000.0,
         )
 
-        runtime.engines["SPY"].update.return_value = SimpleNamespace(rolling_volatility=0.01)
+        runtime.engines["BTC/USD"].update.return_value = SimpleNamespace(rolling_volatility=0.01)
         runtime.portfolio.get_portfolio_state.return_value = {
             "position_size": 0.0,
             "equity": 100000.0,
@@ -107,24 +108,24 @@ class TestTradeSchemaContract(unittest.TestCase):
             "momentum": chosen,
             "volatility_breakout": StrategySignal("volatility_breakout", "hold", 0.1, "x"),
         }
-        tick = Tick(symbol="SPY", price=500.0, timestamp=datetime.now(timezone.utc), volume=1.0)
+        tick = Tick(symbol="BTC/USD", price=50000.0, timestamp=datetime.now(timezone.utc), volume=1.0)
 
-        with patch("alpaca_paper_runner.generate_weighted_signals", return_value=fake_signals), patch(
-            "alpaca_paper_runner.evaluate_signals", return_value=chosen
+        with patch("src.miniqs.runners.paper.generate_weighted_signals", return_value=fake_signals), patch(
+            "src.miniqs.runners.paper.evaluate_signals", return_value=chosen
         ), patch(
-            "alpaca_paper_runner.load_control_state",
+            "src.miniqs.runners.paper.load_control_state",
             return_value={
                 "trading_enabled": True,
                 "kill_switch": False,
-                "risk": {},
-                "strategies": {
+                "src.miniqs.risk": {},
+                "src.miniqs.strategies": {
                     "mean_reversion": True,
                     "momentum": True,
                     "volatility_breakout": True,
                 },
             },
         ):
-            alpaca_paper_runner._on_market_event(MarketEvent(tick=tick), bus, runtime)
+            runner._on_market_event(MarketEvent(tick=tick), bus, runtime)
 
         event = bus.consume()
         self.assertIsInstance(event, SignalEvent)

@@ -7,7 +7,7 @@ import unittest
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from stress_testing import (
+from scripts.run_stress_testing import (
 	generate_spike_scenario,
 	generate_high_volatility_scenario,
 	generate_downtrend_scenario,

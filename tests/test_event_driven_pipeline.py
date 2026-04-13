@@ -1,6 +1,6 @@
 import unittest
 
-from event_driven_pipeline import run_event_driven_paper_trading_session
+from scripts.run_event_pipeline import run_event_driven_paper_trading_session
 
 
 class TestEventDrivenPipeline(unittest.TestCase):

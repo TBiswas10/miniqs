@@ -44,6 +44,7 @@ class EventEngine:
         self._latest_order: Dict[str, Any] = {}
         self._latest_signal: Dict[str, Any] = {}
         self._latest_risk: Dict[str, Any] = {}
+        self._latest_health_report: Dict[str, Any] = {}
 
     async def start(self) -> None:
         if self._running:
@@ -85,6 +86,7 @@ class EventEngine:
             "order": dict(self._latest_order),
             "portfolio": dict(self._latest_portfolio),
             "risk": dict(self._latest_risk),
+            "health_report": dict(self._latest_health_report),
         }
 
     async def _process_loop(self) -> None:
@@ -136,7 +138,9 @@ class EventEngine:
     def _map_trace_row(self, row: Dict[str, Any]) -> List[EventMessage]:
         kind = str(row.get("kind", "")).lower()
         ts = str(row.get("timestamp") or row.get("ts") or _now_iso())
-        symbol = str(row.get("symbol") or "BTC/USD")
+        controls = self.get_control_state() if callable(self.get_control_state) else {}
+        control_asset = controls.get("asset", {}) if isinstance(controls, dict) and isinstance(controls.get("asset"), dict) else {}
+        symbol = str(row.get("symbol") or control_asset.get("symbol") or "BTC/USD")
         events: List[EventMessage] = []
 
         if kind in {"tick", "market", "market_data"}:
@@ -156,13 +160,15 @@ class EventEngine:
 
         if kind == "decision":
             chosen = row.get("chosen") if isinstance(row.get("chosen"), dict) else {}
-            risk = row.get("risk") if isinstance(row.get("risk"), dict) else {}
-            strategy = str(chosen.get("strategy") or "none")
+            risk = row.get("src.miniqs.risk") if isinstance(row.get("src.miniqs.risk"), dict) else {}
+            chosen_strategy = str(chosen.get("strategy") or "none")
             side = str(chosen.get("action") or "HOLD").upper()
-            confidence = float(chosen.get("confidence") or 0.0)
+            chosen_confidence = float(chosen.get("confidence") or 0.0)
+            signal_strategy = chosen_strategy
+            signal_confidence = chosen_confidence
             if not chosen:
-                signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
-                strongest_name = "none"
+                signals = row.get("src.miniqs.signals") if isinstance(row.get("src.miniqs.signals"), dict) else {}
+                strongest_name = "pending"
                 strongest_conf = 0.0
                 for name, payload in signals.items():
                     if not isinstance(payload, dict):
@@ -171,8 +177,8 @@ class EventEngine:
                     if candidate > strongest_conf:
                         strongest_conf = candidate
                         strongest_name = str(name)
-                strategy = strongest_name
-                confidence = strongest_conf
+                signal_strategy = strongest_name
+                signal_confidence = strongest_conf
             reason = str(chosen.get("reason") or row.get("detail") or "")
             events.append(
                 EventMessage(
@@ -207,7 +213,7 @@ class EventEngine:
                     event_type="portfolio_update",
                     ts=ts,
                     source="trace",
-                    strategy_id=strategy,
+                    strategy_id=chosen_strategy,
                     symbol=symbol,
                     session_id=self._session_id,
                     payload={
@@ -227,13 +233,13 @@ class EventEngine:
                         event_type="risk_event",
                         ts=ts,
                         source="trace",
-                        strategy_id=strategy,
+                        strategy_id=chosen_strategy,
                         symbol=symbol,
                         session_id=self._session_id,
                         payload={
                             "risk_type": "trade_block",
                             "severity": "warn",
-                            "reason": str(risk.get("reason") or "risk blocked"),
+                            "reason": str(risk.get("reason") or "src.miniqs.risk blocked"),
                         },
                     )
                 )
@@ -278,7 +284,7 @@ class EventEngine:
                     payload={
                         "risk_type": "data_feed_failure",
                         "severity": "error",
-                        "reason": str(row.get("detail") or row.get("event") or "data feed failure"),
+                        "reason": str(row.get("detail") or row.get("event") or "src.miniqs.data feed failure"),
                     },
                 )
             )
@@ -338,13 +344,15 @@ class EventEngine:
             self._latest_signal = payload
         elif event.event_type == "risk_event":
             self._latest_risk = payload
+        elif event.event_type == "health_report":
+            self._latest_health_report = payload
 
     async def _apply_risk_guards(self, event: EventMessage) -> None:
         if event.event_type != "portfolio_update":
             return
 
         state = self.get_control_state()
-        risk = state.get("risk", {})
+        risk = state.get("src.miniqs.risk", {})
         max_daily_loss = float(
             risk.get(
                 "max_daily_loss",
@@ -359,7 +367,7 @@ class EventEngine:
             await self.emit(
                 EventMessage(
                     event_type="risk_event",
-                    source="engine",
+                    source="src.miniqs.engine",
                     strategy_id="system",
                     symbol=event.symbol,
                     session_id=self._session_id,
@@ -376,7 +384,7 @@ class EventEngine:
             await self.emit(
                 EventMessage(
                     event_type="risk_event",
-                    source="engine",
+                    source="src.miniqs.engine",
                     strategy_id="system",
                     symbol=event.symbol,
                     session_id=self._session_id,

@@ -5,6 +5,14 @@ type RiskCheck = {
   reason: string;
 };
 
+type ConfidenceBreakdown = {
+  signal_strength: number;
+  agreement: number;
+  regime_fit: number;
+  historical_edge: number;
+  final: number;
+};
+
 type HistoryRow = {
   ts: string;
   symbol: string;
@@ -17,6 +25,19 @@ type HistoryRow = {
   reason: string;
   risk_checks: RiskCheck[];
   raw: Record<string, unknown>;
+};
+
+export type AssetMarketHours = {
+  open: string;
+  close: string;
+  timezone: string;
+};
+
+export type AssetControls = {
+  symbol: string;
+  asset_type: "crypto" | "equity";
+  market_hours: AssetMarketHours | null;
+  trading_fees: number;
 };
 
 export type RiskControls = {
@@ -47,7 +68,7 @@ export type DecisionPayload = {
   decision: {
     signal: {
       side: "BUY" | "SELL" | "HOLD";
-      confidence: number;
+      confidence: ConfidenceBreakdown;
       strategy: string;
       reason: string;
       timestamp: string;
@@ -84,9 +105,11 @@ export type DecisionPayload = {
     connection_event: string;
     reconnects: number;
     last_tick_age_sec: number | null;
+    asset?: AssetControls;
     controls: {
       trading_enabled: boolean;
       kill_switch: boolean;
+      asset?: AssetControls;
       strategies: Record<string, boolean>;
       risk: RiskControls;
     };
@@ -95,6 +118,21 @@ export type DecisionPayload = {
       risk_parameters: string[];
       missing_strategy_controls: string[];
     };
+  };
+  risk_state: {
+    halted: boolean;
+    kill_switch: boolean;
+    trading_enabled: boolean;
+    confidence_threshold: number;
+    max_position_size: number;
+    daily_loss_limit: number;
+    risk_per_trade: number;
+    max_exposure: number;
+    cooldown_seconds: number;
+    portfolio_drawdown_limit: number;
+    latest_risk_type: string;
+    latest_risk_reason: string;
+    latest_risk_severity: string;
   };
   thought_stream: Array<{
     ts: string;
@@ -110,6 +148,10 @@ export type DecisionPayload = {
     checks: RiskCheck[];
     reason: string;
   }>;
+  hold_reasons: Array<{
+    reason: string;
+    impact: number;
+  }>;
   strategy_intelligence: Array<{
     strategy: string;
     trades: number;
@@ -118,6 +160,19 @@ export type DecisionPayload = {
     confidence_avg: number;
     trend: Array<{ ts: string; pnl: number; confidence: number }>;
   }>;
+  strategy_health: Record<string, {
+    participation_rate: number;
+    avg_confidence: number;
+    recent_hit_rate: number;
+    contribution_score: number;
+    health_score: number;
+    status: "healthy" | "degrading" | "inactive";
+  }>;
+  risk_debug: {
+    confidence_gate: { value: number; threshold: number; passed: boolean; delta: number };
+    position_limit: { current: number; max: number; passed: boolean; delta: number };
+    drawdown_guard: { current_dd: number; max_dd: number; passed: boolean; delta: number };
+  };
   decision_inspector: {
     full_object: Record<string, unknown>;
     features: Record<string, unknown>;
@@ -133,6 +188,12 @@ export type DecisionPayload = {
     simulated_pnl: number;
     reason_blocked: string;
   }>;
+  counterfactual_result: {
+    changed_actions: number;
+    pnl_original: number;
+    pnl_counterfactual: number;
+    delta: number;
+  };
   performance: {
     win_rate: number;
     avg_profit: number;
@@ -146,4 +207,5 @@ export type DecisionPayload = {
     timeline: HistoryRow[];
   };
   alerts: Array<{ level: "info" | "warn" | "error"; message: string }>;
+  health_report?: string;
 };

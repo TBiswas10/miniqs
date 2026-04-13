@@ -1,6 +1,6 @@
 import unittest
 
-from execution_simulator import ExecutionSimulationConfig, ExecutionSimulator, OrderState
+from src.miniqs.execution.execution_simulator import ExecutionSimulationConfig, ExecutionSimulator, OrderState
 
 
 class TestExecutionSimulator(unittest.TestCase):

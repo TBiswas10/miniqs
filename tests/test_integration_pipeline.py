@@ -1,6 +1,6 @@
 import unittest
 
-from main import run_paper_trading_session
+from scripts.run_main import run_paper_trading_session
 
 
 class TestIntegrationPipeline(unittest.TestCase):

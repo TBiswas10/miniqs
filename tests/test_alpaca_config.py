@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from alpaca_config import AlpacaConfig
+from src.miniqs.config.alpaca import AlpacaConfig
 
 
 class TestAlpacaConfig(unittest.TestCase):
@@ -13,8 +13,9 @@ class TestAlpacaConfig(unittest.TestCase):
             "alpaca": {
                 "api_key_id": "key",
                 "api_secret_key": "secret",
+                "trading_api_version": "v2",
                 "symbols": ["SPY", "QQQ"],
-                "risk": {
+                "src.miniqs.risk": {
                     "trade_size": 2.0,
                     "risk_per_trade": 0.02,
                     "daily_loss_limit": 700.0,
@@ -27,7 +28,7 @@ class TestAlpacaConfig(unittest.TestCase):
                     "mom_threshold": 0.003,
                     "vb_breakout_factor": 1.35,
                 },
-                "execution": {
+                "src.miniqs.execution": {
                     "max_retries": 4,
                     "retry_backoff_seconds": 1.5,
                 },
@@ -42,6 +43,7 @@ class TestAlpacaConfig(unittest.TestCase):
 
         self.assertEqual(cfg.api_key_id, "key")
         self.assertEqual(cfg.api_secret_key, "secret")
+        self.assertEqual(cfg.trading_api_version, "v2")
         self.assertEqual(cfg.symbols, ["SPY", "QQQ"])
         self.assertEqual(cfg.trade_size, 2.0)
         self.assertEqual(cfg.risk_per_trade, 0.02)
@@ -55,6 +57,31 @@ class TestAlpacaConfig(unittest.TestCase):
             {"mean_reversion": 1.0, "momentum": 1.0, "volatility_breakout": 1.0},
         )
         self.assertEqual(cfg.dominance_cap, 0.65)
+
+    def test_trading_api_version_env_override_is_normalized(self) -> None:
+        payload = {
+            "alpaca": {
+                "api_key_id": "file_key",
+                "api_secret_key": "file_secret",
+                "trading_api_version": "v2",
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "alpaca_config.json"
+            p.write_text(json.dumps(payload), encoding="utf-8")
+
+            prev = dict(os.environ)
+            try:
+                os.environ["ALPACA_CONFIG_FILE"] = str(p)
+                os.environ["ALPACA_API_KEY_ID"] = "env_key"
+                os.environ["ALPACA_API_SECRET_KEY"] = "env_secret"
+                os.environ["ALPACA_TRADING_API_VERSION"] = "V2"
+                cfg = AlpacaConfig.from_env()
+            finally:
+                os.environ.clear()
+                os.environ.update(prev)
+
+        self.assertEqual(cfg.trading_api_version, "v2")
 
     def test_strategy_normalization_partial_file_payload_uses_defaults(self) -> None:
         payload = {

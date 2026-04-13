@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from execution import ExecutionEngine
-from portfolio import Portfolio
+from src.miniqs.execution import ExecutionEngine
+from src.miniqs.risk.portfolio import Portfolio
 
 
 class TestExecutionPortfolio(unittest.TestCase):

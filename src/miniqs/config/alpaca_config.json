@@ -1,0 +1,56 @@
+{
+  "alpaca": {
+    "rest_base_url": "https://paper-api.alpaca.markets",
+    "trading_api_version": "v2",
+    "asset_type": "crypto",
+    "market_hours": null,
+    "trading_fees": 0.001,
+    "trading_ws_url": "wss://paper-api.alpaca.markets/stream",
+    "symbols": ["BTC/USD"],
+    "market_data": {
+      "data_feed": "crypto/us",
+      "data_ws_url": "wss://stream.data.alpaca.markets/v1beta3/crypto/us",
+      "subscribe_trades": true,
+      "subscribe_quotes": true,
+      "subscribe_bars": false,
+      "min_tick_interval_seconds": 0.25,
+      "reconnect_initial_seconds": 1.0,
+      "reconnect_max_seconds": 60.0
+    },
+    "risk": {
+      "trade_size": 0.0025,
+      "risk_per_trade": 0.003,
+      "daily_loss_limit": 300.0,
+      "max_loss_per_session": 300.0,
+      "max_position_size": 0.03,
+      "cooldown_seconds": 12,
+      "confidence_threshold": 0.42
+    },
+    "strategy": {
+      "mr_threshold": 0.004,
+      "mom_threshold": 0.0028,
+      "vb_breakout_factor": 1.1,
+      "feedback_trade_interval": 15,
+      "strategy_normalization": {
+        "mean_reversion": 1.0,
+        "momentum": 1.0,
+        "volatility_breakout": 1.0
+      },
+      "dominance_cap": 0.65
+    },
+    "execution": {
+      "order_fill_timeout_seconds": 60.0,
+      "order_poll_interval_seconds": 0.35,
+      "max_retries": 4,
+      "retry_backoff_seconds": 1.25
+    },
+    "status_heartbeat_ticks": 50,
+    "sync_initial_cash_from_alpaca": true,
+    "portfolio_fee_rate": 0.0,
+    "dashboard_jsonl": "logs/live_dashboard.jsonl",
+    "dashboard_snapshot_json": "logs/live_dashboard_snapshot.json",
+    "dashboard_csv": "logs/live_dashboard.csv",
+    "brain_trace_jsonl": "logs/alpaca_brain_trace.jsonl",
+    "db_dir": "."
+  }
+}

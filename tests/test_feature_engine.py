@@ -3,8 +3,8 @@ import unittest
 
 import numpy as np
 
-from data_feed import Tick
-from feature_engine import FeatureEngine
+from src.miniqs.data.data_feed import Tick
+from src.miniqs.engine.feature_engine import FeatureEngine
 
 
 class TestFeatureEngine(unittest.TestCase):

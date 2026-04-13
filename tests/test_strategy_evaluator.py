@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 import unittest
 
-from event_bus import EventBus, SignalEvent
-from feature_engine import FeatureSnapshot
-from strategies import StrategySignal
-from strategies.mean_reversion import generate_signal as mean_reversion_signal
-from strategies.momentum import generate_signal as momentum_signal
-from strategy_evaluator import emit_signal_event, evaluate_signals, evaluate_signals_v2
+from src.miniqs.engine.event_bus import EventBus, SignalEvent
+from src.miniqs.engine.feature_engine import FeatureSnapshot
+from src.miniqs.strategies import StrategySignal
+from src.miniqs.strategies.mean_reversion import generate_signal as mean_reversion_signal
+from src.miniqs.strategies.momentum import generate_signal as momentum_signal
+from src.miniqs.strategies.strategy_evaluator import emit_signal_event, evaluate_signals, evaluate_signals_v2
 
 
 def _features(price: float, mean: float, momentum: float) -> FeatureSnapshot:
